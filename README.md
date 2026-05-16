@@ -264,9 +264,11 @@ no body:
 }
 ```
 
-That's typically 100–200 tokens. The full body lives in `get_lore({ id })`
-and is only fetched when the summary isn't enough — that's where the
-token saving comes from.
+That's typically 100–200 tokens per hit. The full body lives in
+`get_lore({ id })` and is only fetched when the summary isn't enough.
+When lore replaces repeated repo exploration or a long pasted
+explanation, that adds up — but only with curated, compact records.
+Verbose or duplicated lore can grow context, not shrink it.
 
 ## Hook it up to Claude Code
 
@@ -339,7 +341,10 @@ Use `lore` for **just-in-time** context that's only relevant sometimes:
 repo conventions, service gotchas, incident lessons, migration rules,
 security decisions, cross-repo knowledge. The agent calls `search_lore`
 only when the task warrants it and gets a compact summary back. Full
-body only on demand via `get_lore`. That's the token-saving contract.
+body only on demand via `get_lore`. The primary promise is correctness
+(reviewed knowledge, trust signals, no agent-promoted memory); reduced
+repeated context loading is a consequence — real when records stay
+short and high-signal, lost when they don't.
 
 If a rule applies to every session, it belongs in `CLAUDE.md`. If it
 applies only when you're touching `payments-svc`, it belongs in `lore`.
