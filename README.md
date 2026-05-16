@@ -289,7 +289,7 @@ result.)
 
 Claude sees three tools:
 
-- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes; results carry `conflicts: string[]` when two active records share repo + tag)
+- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes; results carry `possibleConflicts: string[]` when two active records share repo + tag — an overlap heuristic, not contradiction detection)
 - `get_lore({ id })` — full body of one record
 - `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
 
@@ -414,6 +414,21 @@ Defaults are conservative:
 - Files without frontmatter, or missing required fields (`id`, `title`,
   `summary`, `status`), are skipped with a reason — `lore sync import`
   never crashes on a malformed file.
+
+A few things `lore sync` deliberately does **not** do:
+
+- **`lore sync export` is not a mirror.** It overwrites the `<id>.md`
+  files for records being exported, but does not remove `.md` files
+  that have no corresponding record. Pass `--clean` if you want a
+  deterministic mirror; otherwise, clear the directory first.
+- **`lore sync import` is upsert-only.** It creates new records and
+  updates existing ones by id. It does **not** delete local records
+  that are absent from the directory. If your team has removed a
+  record from `.lore/`, use `lore delete <id>` locally as well.
+- **The frontmatter parser is intentionally small** — flat scalars,
+  ISO dates, booleans, and string arrays only. Treat the generated
+  format as canonical; if you hand-edit a `.md`, keep the structure
+  the same.
 
 `lore export --json` still exists for one-file JSON backup and
 inspection; `lore sync` is for the version-controlled team flow.

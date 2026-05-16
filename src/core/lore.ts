@@ -794,26 +794,29 @@ export function searchLore(
     const tags = tagsOf(db, row.id);
     return rowToSummary(row, repos, tags, row.score ?? undefined);
   });
-  return annotateConflicts(summaries);
+  return annotatePossibleConflicts(summaries);
 }
 
 /**
- * Pairwise conflict detection within a single search response.
+ * Pairwise overlap detection within a single search response.
  *
- * Two records are flagged as conflicting when ALL of:
+ * Two records are surfaced as possible-conflicts when ALL of:
  *   - both are `active` (drafts / deprecated / superseded are not
  *     authoritative — flagging them muddies the signal),
  *   - they share at least one repo,
  *   - they share at least one tag.
  *
- * The id sets are populated on each side; ordering is preserved so the
- * agent / CLI can render them deterministically. We don't mutate the
- * input summaries — `LoreSummary` is readonly — we return new objects
- * with `conflicts` populated when non-empty.
+ * This is a HEURISTIC, not contradiction detection: two records in the
+ * same scope can be complementary just as easily as they can disagree.
+ * The flag is a "read both" prompt, not authority. The id sets are
+ * populated on each side; ordering is preserved so the agent / CLI can
+ * render them deterministically. We don't mutate the input summaries —
+ * `LoreSummary` is readonly — we return new objects with
+ * `possibleConflicts` populated when non-empty.
  */
-function annotateConflicts(summaries: LoreSummary[]): LoreSummary[] {
+function annotatePossibleConflicts(summaries: LoreSummary[]): LoreSummary[] {
   if (summaries.length < 2) return summaries;
-  const conflicts = new Map<string, string[]>();
+  const overlaps = new Map<string, string[]>();
   for (let i = 0; i < summaries.length; i++) {
     const a = summaries[i]!;
     if (a.status !== "active") continue;
@@ -822,16 +825,16 @@ function annotateConflicts(summaries: LoreSummary[]): LoreSummary[] {
       if (b.status !== "active") continue;
       if (!hasIntersection(a.repos, b.repos)) continue;
       if (!hasIntersection(a.tags, b.tags)) continue;
-      if (!conflicts.has(a.id)) conflicts.set(a.id, []);
-      if (!conflicts.has(b.id)) conflicts.set(b.id, []);
-      conflicts.get(a.id)!.push(b.id);
-      conflicts.get(b.id)!.push(a.id);
+      if (!overlaps.has(a.id)) overlaps.set(a.id, []);
+      if (!overlaps.has(b.id)) overlaps.set(b.id, []);
+      overlaps.get(a.id)!.push(b.id);
+      overlaps.get(b.id)!.push(a.id);
     }
   }
-  if (conflicts.size === 0) return summaries;
+  if (overlaps.size === 0) return summaries;
   return summaries.map((s) => {
-    const c = conflicts.get(s.id);
-    return c && c.length > 0 ? { ...s, conflicts: c } : s;
+    const c = overlaps.get(s.id);
+    return c && c.length > 0 ? { ...s, possibleConflicts: c } : s;
   });
 }
 

@@ -922,7 +922,7 @@ describe("core/lore", () => {
   describe("conflict surfacing in searchLore", () => {
     /**
      * Two active records sharing a repo and a tag are flagged in each
-     * other's `conflicts` array. The intent is to make a "two
+     * other's `possibleConflicts` array. The intent is to make a "two
      * authoritative-looking records disagree" situation visible to the
      * agent without an extra round trip.
      */
@@ -944,8 +944,8 @@ describe("core/lore", () => {
       const hits = searchLore(db, { query: "password hash policy" });
       const ha = hits.find((h) => h.id === a.id);
       const hb = hits.find((h) => h.id === b.id);
-      expect(ha?.conflicts).toContain(b.id);
-      expect(hb?.conflicts).toContain(a.id);
+      expect(ha?.possibleConflicts).toContain(b.id);
+      expect(hb?.possibleConflicts).toContain(a.id);
     });
 
     it("does not flag when only the repo overlaps", () => {
@@ -965,7 +965,7 @@ describe("core/lore", () => {
       });
       const hits = searchLore(db, { query: "migration" });
       for (const h of hits) {
-        expect(h.conflicts ?? []).toEqual([]);
+        expect(h.possibleConflicts ?? []).toEqual([]);
       }
     });
 
@@ -986,7 +986,7 @@ describe("core/lore", () => {
       });
       const hits = searchLore(db, { query: "cookie policy" });
       for (const h of hits) {
-        expect(h.conflicts ?? []).toEqual([]);
+        expect(h.possibleConflicts ?? []).toEqual([]);
       }
     });
 
@@ -1012,10 +1012,10 @@ describe("core/lore", () => {
       });
       const ha = hits.find((h) => h.id === active.id);
       // deprecated co-result shouldn't trigger a conflict
-      expect(ha?.conflicts ?? []).toEqual([]);
+      expect(ha?.possibleConflicts ?? []).toEqual([]);
     });
 
-    it("populates conflicts for a 3-way overlap correctly", () => {
+    it("populates possibleConflicts for a 3-way overlap correctly", () => {
       const a = addLore(db, {
         title: "Caching policy A",
         summary: "x",
@@ -1042,9 +1042,9 @@ describe("core/lore", () => {
       const hb = hits.find((h) => h.id === b.id);
       const hc = hits.find((h) => h.id === c.id);
       // Each should list the other two.
-      expect(ha?.conflicts?.sort()).toEqual([b.id, c.id].sort());
-      expect(hb?.conflicts?.sort()).toEqual([a.id, c.id].sort());
-      expect(hc?.conflicts?.sort()).toEqual([a.id, b.id].sort());
+      expect(ha?.possibleConflicts?.sort()).toEqual([b.id, c.id].sort());
+      expect(hb?.possibleConflicts?.sort()).toEqual([a.id, c.id].sort());
+      expect(hc?.possibleConflicts?.sort()).toEqual([a.id, b.id].sort());
     });
 
     it("does not flag a single result with no other co-results", () => {
@@ -1056,7 +1056,7 @@ describe("core/lore", () => {
         tags: ["solo"],
       });
       const hits = searchLore(db, { query: "Lonely policy" });
-      expect(hits[0]?.conflicts ?? []).toEqual([]);
+      expect(hits[0]?.possibleConflicts ?? []).toEqual([]);
     });
   });
 
