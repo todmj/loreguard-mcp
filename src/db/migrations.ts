@@ -51,27 +51,14 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
         );
         CREATE INDEX idx_events_idea_ts ON events(idea_id, ts);
 
-        -- Full-text search across title / summary / body. Content-rowid'd to
-        -- the ideas table so updates stay in sync via triggers below.
+        -- Full-text search across title / summary / body. FTS maintenance
+        -- is done in TypeScript (see core/ideas.ts) rather than via SQL
+        -- triggers — predictable, debuggable, no FTS5 'delete'-magic
+        -- gotchas when WAL + transactions overlap.
         CREATE VIRTUAL TABLE ideas_fts USING fts5(
           title, summary, body,
           tokenize = 'porter unicode61'
         );
-
-        CREATE TRIGGER ideas_fts_ai AFTER INSERT ON ideas BEGIN
-          INSERT INTO ideas_fts(rowid, title, summary, body)
-            VALUES (new.rowid, new.title, new.summary, new.body);
-        END;
-        CREATE TRIGGER ideas_fts_ad AFTER DELETE ON ideas BEGIN
-          INSERT INTO ideas_fts(ideas_fts, rowid, title, summary, body)
-            VALUES('delete', old.rowid, old.title, old.summary, old.body);
-        END;
-        CREATE TRIGGER ideas_fts_au AFTER UPDATE ON ideas BEGIN
-          INSERT INTO ideas_fts(ideas_fts, rowid, title, summary, body)
-            VALUES('delete', old.rowid, old.title, old.summary, old.body);
-          INSERT INTO ideas_fts(rowid, title, summary, body)
-            VALUES (new.rowid, new.title, new.summary, new.body);
-        END;
       `);
     },
   },
