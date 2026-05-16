@@ -10,7 +10,7 @@ import type {
   SearchOptions,
   UpdateLoreInput,
 } from "../db/types.js";
-import { newIdeaId as newLoreId } from "./ids.js";
+import { newLoreId } from "./ids.js";
 
 function nowIso(): string {
   return new Date().toISOString();

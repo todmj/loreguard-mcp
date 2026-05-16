@@ -1,15 +1,15 @@
 import { randomBytes } from "node:crypto";
 
 /**
- * Short, URL-safe, human-typeable ID for ideas. Format: 8 chars from a
- * Crockford-style base32 alphabet (no I/L/O/0/1 → less typo risk when a
- * human reads "open lore idea 7vk3qm9b" off a Slack thread).
+ * Short, URL-safe, human-typeable ID for lore records. Format: 8 chars
+ * from a Crockford-style base32 alphabet (no I/L/O/0/1 → less typo risk
+ * when a human reads "open lore record 7vk3qm9b" off a Slack thread).
  *
  * 32^8 = ~1.1e12 keys → collision probability negligible at expected scale.
  */
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-export function newIdeaId(): string {
+export function newLoreId(): string {
   const bytes = randomBytes(8);
   let out = "";
   for (let i = 0; i < 8; i++) {
