@@ -128,8 +128,11 @@ knowledge (see [What deserves lore?](#what-deserves-lore) above);
 > anything your AI client should not receive in a prompt into lore.
 > `lore` is a retrieval index, not a vault — retrieved records are sent
 > to your configured LLM provider as part of the next prompt. The
-> `restricted` flag hides records from default search; it does not
-> prevent disclosure once a record is fetched.
+> `restricted` flag hides records from default search and, over MCP,
+> blocks direct fetch via `get_lore` unless `LORE_ALLOW_RESTRICTED_MCP=1`.
+> It is still not DLP or a vault: local users can read the DB, and
+> once a restricted record is deliberately retrieved it may enter the
+> LLM prompt.
 
 ## Add a note (human)
 
