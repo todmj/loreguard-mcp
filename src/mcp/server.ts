@@ -69,9 +69,21 @@ export async function runMcpServer(): Promise<void> {
               "you'd write it in a Git URL, e.g. 'payments-svc').",
           ),
         tag: z
-          .string()
+          .union([z.string(), z.array(z.string())])
           .optional()
-          .describe("Narrow to records carrying this tag (lowercased, hyphenated)."),
+          .describe(
+            "Narrow to records carrying this tag, or any of these tags " +
+              "if a list is given (ANY-of). Tags are lowercased / hyphenated " +
+              "automatically — pass them however you like.",
+          ),
+        prefix: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, query tokens of 3+ chars match as PREFIXES " +
+              "('timez' → 'timezone'). Off by default; turn on when you're " +
+              "guessing at a term or want broader recall.",
+          ),
         updatedAfter: z
           .string()
           .optional()
@@ -121,6 +133,7 @@ export async function runMcpServer(): Promise<void> {
           query: args.query,
           repo: args.repo,
           tag: args.tag,
+          prefix: args.prefix,
           updatedAfter: args.updatedAfter,
           includeDrafts: args.includeDrafts,
           includeDeprecated: args.includeDeprecated,

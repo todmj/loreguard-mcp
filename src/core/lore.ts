@@ -563,9 +563,14 @@ export function searchLore(
   let select: string;
   if (hasFts) {
     from = `lore l JOIN lore_fts fts ON fts.rowid = l.rowid`;
-    select = `l.*, bm25(lore_fts) AS score`;
+    // bm25 column weights: title is the strongest authority signal,
+    // summary is curated short-form, body is the long tail. Heavier
+    // weight = more contribution to relevance for matches in that
+    // column. Order matches the FTS table definition (title, summary,
+    // body). Values picked to be opinionated but not extreme.
+    select = `l.*, bm25(lore_fts, 3.0, 2.0, 1.0) AS score`;
     filters.push("lore_fts MATCH ?");
-    params.push(toFtsQuery(opts.query!.trim()));
+    params.push(toFtsQuery(opts.query!.trim(), !!opts.prefix));
   } else {
     from = `lore l`;
     select = `l.*, NULL AS score`;
@@ -581,9 +586,21 @@ export function searchLore(
     filters.push(`l.id IN (SELECT lore_id FROM lore_repos WHERE repo = ?)`);
     params.push(opts.repo);
   }
-  if (opts.tag) {
-    filters.push(`l.id IN (SELECT lore_id FROM lore_tags WHERE tag = ?)`);
-    params.push(normaliseTag(opts.tag));
+  if (opts.tag !== undefined) {
+    const tagList = Array.isArray(opts.tag) ? opts.tag : [opts.tag];
+    const normalised = Array.from(
+      new Set(tagList.map((t) => normaliseTag(t as string)).filter(Boolean)),
+    );
+    if (normalised.length === 1) {
+      filters.push(`l.id IN (SELECT lore_id FROM lore_tags WHERE tag = ?)`);
+      params.push(normalised[0]!);
+    } else if (normalised.length > 1) {
+      const placeholders = normalised.map(() => "?").join(",");
+      filters.push(
+        `l.id IN (SELECT lore_id FROM lore_tags WHERE tag IN (${placeholders}))`,
+      );
+      params.push(...normalised);
+    }
   }
   if (opts.updatedAfter) {
     filters.push("l.updated_at >= ?");
@@ -663,14 +680,21 @@ function hasIntersection(
  * Translate a free-text query into an FTS5 MATCH expression.
  * Split on whitespace, drop empties, quote each term — stops users
  * accidentally tripping FTS operators (NEAR, OR, AND, ", :, etc.).
+ *
+ * When `prefix` is true, every quoted token of length ≥ 3 is suffixed
+ * with `*` so it matches as a prefix ("timez" → "timezone"). Tokens
+ * shorter than 3 chars stay exact-match because a 1–2 char prefix is
+ * usually meaningless and slow.
  */
-function toFtsQuery(input: string): string {
+function toFtsQuery(input: string, prefix: boolean): string {
   const parts = input
     .split(/\s+/)
     .map((p) => p.replace(/"/g, ""))
     .filter(Boolean);
   if (parts.length === 0) return '""';
-  return parts.map((p) => `"${p}"`).join(" ");
+  return parts
+    .map((p) => (prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`))
+    .join(" ");
 }
 
 export interface PossibleDuplicate extends LoreSummary {

@@ -98,7 +98,12 @@ export interface LoreSummary {
 export interface SearchOptions {
   readonly query?: string;
   readonly repo?: string;
-  readonly tag?: string;
+  /**
+   * Single tag or a list of tags. ANY-of semantics: a record matches if
+   * it carries at least one of the requested tags. (AND semantics is
+   * deferred — most callers want "show me anything tagged X or Y".)
+   */
+  readonly tag?: string | ReadonlyArray<string>;
   /** ISO timestamp; only lore updated on/after this is returned. */
   readonly updatedAfter?: string;
   /** Default false. */
@@ -109,6 +114,13 @@ export interface SearchOptions {
   readonly includeDeprecated?: boolean;
   /** Default false. */
   readonly includeSuperseded?: boolean;
+  /**
+   * Opt-in prefix match. When true, every query token of 3+ chars is
+   * matched as a prefix (FTS5 `"token"*`), so "timez" hits "timezone".
+   * Off by default because prefix queries can match aggressively — a
+   * three-character prefix can hit half the index.
+   */
+  readonly prefix?: boolean;
   readonly limit?: number;
 }
 
