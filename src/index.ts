@@ -27,7 +27,7 @@ export {
   updateLore,
   verifyLore,
 } from "./core/lore.js";
-export { newIdeaId as newLoreId } from "./core/ids.js";
+export { newLoreId } from "./core/ids.js";
 export type {
   AddLoreInput,
   Lore,
