@@ -24,6 +24,7 @@ import {
   verifyLore,
 } from "../core/lore.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
+import { cleanDemo, countLore, seedDemo } from "./demo.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
 import { renderClaudeInstructions } from "./instructions.js";
@@ -84,6 +85,11 @@ COMMANDS
                             permissions, FTS index, audit log, restricted
                             MCP gate, version. Exits non-zero on hard
                             failures, zero on warnings.
+  demo [--force | --clean]  Seed five illustrative records (tagged 'demo')
+                            so you can try list / search / review without
+                            authoring content first. Refuses to seed into
+                            a non-empty DB unless --force. Use --clean to
+                            remove the demo records later.
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -647,6 +653,50 @@ async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
+async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const force = getBool(args.flags, "force");
+  const clean = getBool(args.flags, "clean");
+  if (force && clean) {
+    process.stderr.write("lore: --force and --clean are mutually exclusive\n");
+    return 2;
+  }
+  const db = openDb();
+  try {
+    if (clean) {
+      const removed = cleanDemo(db);
+      process.stdout.write(
+        removed === 0
+          ? "lore: no demo records found (nothing to clean)\n"
+          : `lore: removed ${removed} demo record(s)\n`,
+      );
+      return 0;
+    }
+    const existing = countLore(db);
+    if (existing > 0 && !force) {
+      process.stderr.write(
+        `lore: refusing to seed demo into a non-empty DB (${existing} record(s) already present).\n` +
+          "      Re-run with --force to seed anyway, or `lore demo --clean` to remove demo records later.\n",
+      );
+      return 1;
+    }
+    const { inserted, ids } = seedDemo(db);
+    process.stdout.write(
+      `lore: seeded ${inserted} demo record(s).\n\n` +
+        `Try:\n` +
+        `  lore list\n` +
+        `  lore search "timezone"\n` +
+        `  lore review        # the demo set includes one draft to triage\n\n` +
+        `Cleanup when you're done:\n` +
+        `  lore demo --clean  # removes only records tagged 'demo'\n`,
+    );
+    // Echo the ids so a curious user can `lore show <id>` immediately.
+    for (const id of ids) process.stdout.write(`  ${id}\n`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdDoctor(): Promise<number> {
   const { exitCode, checks } = runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
@@ -804,6 +854,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdAudit(parsed);
       case "export":
         return await cmdExport(parsed);
+      case "demo":
+        return await cmdDemo(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":
