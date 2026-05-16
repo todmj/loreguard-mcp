@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { audit } from "../core/audit.js";
 import {
+  findPossibleDuplicates,
   getLore,
   searchLore,
   suggestLore,
@@ -303,7 +304,7 @@ export async function runMcpServer(): Promise<void> {
       // This is the trust-model boundary called out in SECURITY.md — the
       // audit log records that a suggestion happened, not the suggestion's
       // contents. To inspect the content, read the SQLite `lore` row.
-      const sanitised = {
+      const sanitised: Record<string, unknown> = {
         title: args.title,
         summaryChars: args.summary.length,
         bodyChars: args.body.length,
@@ -325,6 +326,18 @@ export async function runMcpServer(): Promise<void> {
           team: args.team,
           author: "agent",
         });
+        // Hint-only duplicate check. Never blocks — the human reviewer
+        // decides. Surfaced in the response so the calling agent can warn
+        // the user inline ("I drafted this but here are 2 similar
+        // existing records"), and counted in the audit so a human reading
+        // ~/.lore/audit.jsonl can see how often agents suggest near-dupes.
+        const possibleDuplicates = findPossibleDuplicates(db, {
+          id: lore.id,
+          title: args.title,
+          repos: args.repos,
+          tags: args.tags,
+        });
+        sanitised["possibleDuplicateCount"] = possibleDuplicates.length;
         audit({
           tool: "suggest_lore",
           request: sanitised,
@@ -342,6 +355,7 @@ export async function runMcpServer(): Promise<void> {
                   message:
                     "Draft created. A human will review with `lore review` and " +
                     "promote with `lore approve " + lore.id + "`.",
+                  possibleDuplicates,
                 },
                 null,
                 2,
