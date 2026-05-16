@@ -23,13 +23,25 @@ git clone https://github.com/todmj/lore-mcp.git
 cd lore-mcp
 pnpm install                  # builds the better-sqlite3 native binding too
 pnpm build
-npm link                      # makes `lore` and `lore-mcp` available on $PATH
-lore init
+npm link                      # REQUIRED: puts `lore` + `lore-mcp` on your $PATH
+lore init                     # creates ~/.lore/lore.db (mode 0600)
 ```
 
-`npm link` symlinks the local `dist/bin/lore.js` and `dist/bin/lore-mcp.js`
-into your global npm prefix, so `lore` and `lore-mcp` work from any
-directory just like an npm-installed package would. To uninstall later:
+> **The `npm link` step is required.** Without it, typing `lore` in your
+> terminal will give `command not found`. `npm link` symlinks the local
+> `dist/bin/lore.js` and `dist/bin/lore-mcp.js` into your global npm
+> prefix, so `lore`, `lore-mcp`, `lore review`, `lore doctor` etc. work
+> from any directory just like an npm-installed package would.
+
+Verify it landed:
+
+```bash
+which lore         # → /opt/homebrew/bin/lore  (or wherever your npm prefix is)
+lore --version     # → 0.1.0
+lore doctor
+```
+
+To uninstall the link later:
 
 ```bash
 cd lore-mcp && npm unlink -g
@@ -37,7 +49,8 @@ cd lore-mcp && npm unlink -g
 
 Don't want `npm link`? Skip it and reference the absolute path everywhere
 (e.g. in `claude mcp add` — see [Hook it up to Claude Code](#hook-it-up-to-claude-code)
-below).
+below). You won't be able to type `lore` directly though; every CLI
+invocation becomes `node /absolute/path/to/lore-mcp/dist/bin/lore.js …`.
 
 Once the package is published on npm this will simplify to:
 
