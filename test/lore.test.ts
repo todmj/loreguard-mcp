@@ -6,6 +6,7 @@ import {
   approveLore,
   deleteLore,
   deprecateLore,
+  findPossibleDuplicates,
   getLore,
   listDrafts,
   listRecent,
@@ -631,6 +632,155 @@ describe("core/lore", () => {
       expect(() =>
         updateLore(db, a.id, { reviewAfter: "garbage" }),
       ).toThrow(/reviewAfter/);
+    });
+  });
+
+  describe("findPossibleDuplicates", () => {
+    it("returns near-duplicates by title token overlap", () => {
+      const existing = addLore(db, {
+        title: "Dates must include timezone offsets",
+        summary: "Existing rule.",
+        body: "b",
+        repos: ["payments-svc"],
+        tags: ["dates"],
+      });
+      const fresh = suggestLore(db, {
+        title: "API dates need timezone offset",
+        summary: "Same idea, drafted again.",
+        body: "b",
+        repos: ["payments-svc"],
+        tags: ["dates"],
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: fresh.id,
+        title: "API dates need timezone offset",
+        repos: ["payments-svc"],
+        tags: ["dates"],
+      });
+      expect(dupes.map((d) => d.id)).toContain(existing.id);
+    });
+
+    it("returns [] when title has fewer than two meaningful tokens", () => {
+      addLore(db, {
+        title: "Things",
+        summary: "s",
+        body: "b",
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: "xxxxxxxx",
+        title: "x",
+      });
+      expect(dupes).toEqual([]);
+    });
+
+    it("excludes the given id (no self-match for the just-inserted record)", () => {
+      const lore = suggestLore(db, {
+        title: "Argon2id password hashing default",
+        summary: "s",
+        body: "b",
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: lore.id,
+        title: "Argon2id password hashing default",
+      });
+      expect(dupes.map((d) => d.id)).not.toContain(lore.id);
+    });
+
+    it("excludes restricted records — dupe hints shouldn't leak restricted titles", () => {
+      const restricted = addLore(db, {
+        title: "Restricted runbook: rotate platinum keys",
+        summary: "s",
+        body: "b",
+        restricted: true,
+      });
+      const draft = suggestLore(db, {
+        title: "Rotate platinum keys policy",
+        summary: "s",
+        body: "b",
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: draft.id,
+        title: "Rotate platinum keys policy",
+      });
+      expect(dupes.map((d) => d.id)).not.toContain(restricted.id);
+    });
+
+    it("excludes deprecated and superseded records", () => {
+      const a = addLore(db, {
+        title: "Deprecated bcrypt password policy",
+        summary: "s",
+        body: "b",
+      });
+      const b = addLore(db, {
+        title: "Old superseded bcrypt password rule",
+        summary: "s",
+        body: "b",
+      });
+      const c = addLore(db, {
+        title: "Replacement bcrypt password rule",
+        summary: "s",
+        body: "b",
+      });
+      deprecateLore(db, a.id);
+      supersedeLore(db, b.id, c.id);
+      const draft = suggestLore(db, {
+        title: "New bcrypt password idea",
+        summary: "s",
+        body: "b",
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: draft.id,
+        title: "New bcrypt password idea",
+      });
+      const ids = dupes.map((d) => d.id);
+      expect(ids).not.toContain(a.id);
+      expect(ids).not.toContain(b.id);
+      // c (the active replacement) is fair game.
+      expect(ids).toContain(c.id);
+    });
+
+    it("ranks shared-repo/tag overlap above pure-FTS matches", () => {
+      // Two existing records with similar titles. One shares the draft's
+      // repo, the other doesn't. Both should be candidates; the
+      // repo-overlap one should come first.
+      const sharesRepo = addLore(db, {
+        title: "Vermilion zeppelin altitude policy",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+      });
+      addLore(db, {
+        title: "Vermilion zeppelin altitude policy archive",
+        summary: "s",
+        body: "b",
+        repos: ["other-svc"],
+      });
+      const draft = suggestLore(db, {
+        title: "Vermilion zeppelin altitude policy new",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: draft.id,
+        title: "Vermilion zeppelin altitude policy new",
+        repos: ["aviation-svc"],
+      });
+      expect(dupes.length).toBeGreaterThanOrEqual(1);
+      expect(dupes[0]!.id).toBe(sharesRepo.id);
+    });
+
+    it("returns [] when no candidates match", () => {
+      addLore(db, {
+        title: "Completely unrelated subject matter here",
+        summary: "s",
+        body: "b",
+      });
+      const dupes = findPossibleDuplicates(db, {
+        id: "xxxxxxxx",
+        title: "Vermilion zeppelin policy",
+      });
+      expect(dupes).toEqual([]);
     });
   });
 

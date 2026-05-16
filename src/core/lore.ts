@@ -625,6 +625,100 @@ function toFtsQuery(input: string): string {
 }
 
 /**
+ * Reviewer aid for suggest_lore: given a record's title (+ optional repo/tag
+ * scope), return up to `limit` existing records that look similar — so the
+ * agent's response (and the human reviewer) can spot near-duplicates before
+ * they accumulate. Hints only: never blocks a suggestion.
+ *
+ * Ranking: FTS bm25 on title tokens, with a small overlap bonus for records
+ * sharing any of the requested repos or tags. The bonus is deliberately
+ * coarse — it's a hint, not authoritative.
+ *
+ * Scope:
+ *   - Considers `active` + `draft` records (not deprecated / superseded —
+ *     those are tombstones; the reviewer doesn't need to know about them).
+ *   - Excludes the just-inserted record itself (caller passes its id).
+ *   - Excludes `restricted` records — we don't surface restricted titles
+ *     as a side effect of a draft suggestion.
+ *
+ * Returns `[]` when the title is too short for meaningful matching (< 2
+ * tokens of length ≥ 3) rather than guessing.
+ */
+export function findPossibleDuplicates(
+  db: Database,
+  input: {
+    id: string;
+    title: string;
+    repos?: ReadonlyArray<string>;
+    tags?: ReadonlyArray<string>;
+    limit?: number;
+  },
+): LoreSummary[] {
+  const tokens = tokenizeTitleForDuplicates(input.title);
+  if (tokens.length < 2) return [];
+  const limit = input.limit ?? 3;
+  // OR the tokens so we surface any partial overlap. FTS5 OR is the default
+  // join, but spell it out for clarity.
+  const ftsQuery = tokens.map((t) => `"${t}"`).join(" OR ");
+  const rows = db
+    .prepare(
+      `SELECT l.*, bm25(lore_fts) AS score
+       FROM lore l JOIN lore_fts fts ON fts.rowid = l.rowid
+       WHERE lore_fts MATCH ?
+         AND l.id != ?
+         AND l.status IN ('active', 'draft')
+         AND l.restricted = 0
+       ORDER BY score ASC
+       LIMIT 20`,
+    )
+    .all(ftsQuery, input.id) as Array<LoreRow & { score: number }>;
+
+  const wantRepos = new Set(
+    (input.repos ?? []).map(normaliseRepo).filter(Boolean),
+  );
+  const wantTags = new Set(
+    (input.tags ?? []).map(normaliseTag).filter(Boolean),
+  );
+  type Scored = {
+    row: LoreRow & { score: number };
+    repos: string[];
+    tags: string[];
+    overlap: number;
+  };
+  const scored: Scored[] = rows.map((row) => {
+    const repos = reposOf(db, row.id);
+    const tags = tagsOf(db, row.id);
+    let overlap = 0;
+    for (const r of repos) if (wantRepos.has(r)) overlap++;
+    for (const t of tags) if (wantTags.has(t)) overlap++;
+    return { row, repos, tags, overlap };
+  });
+  scored.sort((a, b) => {
+    if (a.overlap !== b.overlap) return b.overlap - a.overlap;
+    return a.row.score - b.row.score;
+  });
+  return scored
+    .slice(0, limit)
+    .map((s) => rowToSummary(s.row, s.repos, s.tags, s.row.score));
+}
+
+/**
+ * Title tokenizer for duplicate detection: lowercase, split on non-alnum,
+ * drop tokens shorter than 3 chars (too noisy: "a", "is", "to"), dedupe,
+ * cap at 6 tokens so the FTS query stays cheap.
+ */
+function tokenizeTitleForDuplicates(title: string): string[] {
+  return Array.from(
+    new Set(
+      title
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 3),
+    ),
+  ).slice(0, 6);
+}
+
+/**
  * Recent lore across all lifecycle states (active + draft + deprecated),
  * freshest first. Used by `lore list` for at-a-glance browse.
  */
