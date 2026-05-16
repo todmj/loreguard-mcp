@@ -70,10 +70,14 @@ export async function runMcpServer(): Promise<void> {
           .string()
           .optional()
           .describe("Narrow to records carrying this tag (lowercased, hyphenated)."),
-        since: z
+        updatedAfter: z
           .string()
           .optional()
-          .describe("ISO timestamp; only records updated on/after this are returned."),
+          .describe(
+            "ISO timestamp. Returns only records whose `updated_at` is " +
+              "on/after this. Use sparingly — most useful queries don't " +
+              "filter by time. Format: '2026-01-15' or full ISO datetime.",
+          ),
         includeDrafts: z
           .boolean()
           .optional()
@@ -103,7 +107,16 @@ export async function runMcpServer(): Promise<void> {
     },
     async (args) => {
       try {
-        const hits = searchLore(db, args);
+        const hits = searchLore(db, {
+          query: args.query,
+          repo: args.repo,
+          tag: args.tag,
+          since: args.updatedAfter,
+          includeDrafts: args.includeDrafts,
+          includeDeprecated: args.includeDeprecated,
+          includeRestricted: args.includeRestricted,
+          limit: args.limit,
+        });
         audit({
           tool: "search_lore",
           request: args as Record<string, unknown>,

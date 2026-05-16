@@ -92,6 +92,27 @@ function tagsOf(db: Database, id: string): string[] {
 }
 
 /**
+ * Confidence invariants (R2 review):
+ *   - A record without a `source` can never be `high` confidence. If a
+ *     caller asks for `high` without a source, clamp down to `medium`.
+ *     This stops well-meaning humans (and rubber-stamping reviewers)
+ *     from creating un-anchored "authoritative" rules.
+ *   - When status=draft (suggestLore path) the caller's max claim is
+ *     `medium`. Only a human, via `addLore` or `approveLore`-then-update,
+ *     can stamp `high`.
+ */
+export function clampConfidence(
+  requested: LoreConfidence | undefined,
+  hasSource: boolean,
+  status: LoreStatus,
+): LoreConfidence {
+  let c: LoreConfidence = requested ?? "medium";
+  if (status === "draft" && c === "high") c = "medium";
+  if (c === "high" && !hasSource) c = "medium";
+  return c;
+}
+
+/**
  * Internal insert path shared by addLore (status='active') and
  * suggestLore (status='draft'). Callers pick the lifecycle default;
  * everything else is symmetric.
@@ -109,7 +130,7 @@ function insertLore(
   const tags = Array.from(
     new Set((input.tags ?? []).map(normaliseTag).filter(Boolean)),
   ).sort();
-  const confidence: LoreConfidence = input.confidence ?? "medium";
+  const confidence = clampConfidence(input.confidence, !!input.source, status);
   const tx = db.transaction(() => {
     const info = db
       .prepare(

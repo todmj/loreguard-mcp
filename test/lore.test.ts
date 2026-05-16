@@ -112,6 +112,41 @@ describe("core/lore", () => {
     });
   });
 
+  describe("confidence invariants", () => {
+    it("agent suggestions cannot claim high confidence; clamps to medium", () => {
+      const lore = suggestLore(db, {
+        title: "t",
+        summary: "s",
+        body: "b",
+        confidence: "high",
+        source: "https://example.com/x",
+      });
+      // Even WITH a source, drafts max out at medium.
+      expect(lore.confidence).toBe("medium");
+    });
+
+    it("a high-confidence claim without a source is clamped to medium", () => {
+      const lore = addLore(db, {
+        title: "t",
+        summary: "s",
+        body: "b",
+        confidence: "high",
+      });
+      expect(lore.confidence).toBe("medium");
+    });
+
+    it("a human-added record with a source can stamp high", () => {
+      const lore = addLore(db, {
+        title: "t",
+        summary: "s",
+        body: "b",
+        confidence: "high",
+        source: "https://example.com/adrs/14",
+      });
+      expect(lore.confidence).toBe("high");
+    });
+  });
+
   describe("approveLore", () => {
     it("returns null on unknown id", () => {
       expect(approveLore(db, "ghost")).toBeNull();
