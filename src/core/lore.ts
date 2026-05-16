@@ -603,11 +603,60 @@ export function searchLore(
   const rows = db.prepare(sql).all(...params) as Array<
     LoreRow & { score: number | null }
   >;
-  return rows.map((row) => {
+  const summaries = rows.map((row) => {
     const repos = reposOf(db, row.id);
     const tags = tagsOf(db, row.id);
     return rowToSummary(row, repos, tags, row.score ?? undefined);
   });
+  return annotateConflicts(summaries);
+}
+
+/**
+ * Pairwise conflict detection within a single search response.
+ *
+ * Two records are flagged as conflicting when ALL of:
+ *   - both are `active` (drafts / deprecated / superseded are not
+ *     authoritative — flagging them muddies the signal),
+ *   - they share at least one repo,
+ *   - they share at least one tag.
+ *
+ * The id sets are populated on each side; ordering is preserved so the
+ * agent / CLI can render them deterministically. We don't mutate the
+ * input summaries — `LoreSummary` is readonly — we return new objects
+ * with `conflicts` populated when non-empty.
+ */
+function annotateConflicts(summaries: LoreSummary[]): LoreSummary[] {
+  if (summaries.length < 2) return summaries;
+  const conflicts = new Map<string, string[]>();
+  for (let i = 0; i < summaries.length; i++) {
+    const a = summaries[i]!;
+    if (a.status !== "active") continue;
+    for (let j = i + 1; j < summaries.length; j++) {
+      const b = summaries[j]!;
+      if (b.status !== "active") continue;
+      if (!hasIntersection(a.repos, b.repos)) continue;
+      if (!hasIntersection(a.tags, b.tags)) continue;
+      if (!conflicts.has(a.id)) conflicts.set(a.id, []);
+      if (!conflicts.has(b.id)) conflicts.set(b.id, []);
+      conflicts.get(a.id)!.push(b.id);
+      conflicts.get(b.id)!.push(a.id);
+    }
+  }
+  if (conflicts.size === 0) return summaries;
+  return summaries.map((s) => {
+    const c = conflicts.get(s.id);
+    return c && c.length > 0 ? { ...s, conflicts: c } : s;
+  });
+}
+
+function hasIntersection(
+  a: ReadonlyArray<string>,
+  b: ReadonlyArray<string>,
+): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  const set = new Set(a);
+  for (const x of b) if (set.has(x)) return true;
+  return false;
 }
 
 /**

@@ -84,6 +84,15 @@ export interface LoreSummary {
   readonly stale: boolean;
   /** FTS rank, lower = more relevant. Undefined when no query was given. */
   readonly score?: number;
+  /**
+   * IDs of other `active` records in the SAME search response that share
+   * at least one repo AND at least one tag with this one — i.e. plausible
+   * conflicting authorities. Populated by `searchLore` after the result
+   * set is assembled; intentionally scoped to the current response so the
+   * agent / reviewer sees the contradiction without an extra round trip.
+   * Empty / omitted when nothing in the response qualifies.
+   */
+  readonly conflicts?: ReadonlyArray<string>;
 }
 
 export interface SearchOptions {
