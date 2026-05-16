@@ -90,6 +90,14 @@ export async function runMcpServer(): Promise<void> {
           .boolean()
           .optional()
           .describe("If true, also return records the team has marked deprecated."),
+        includeSuperseded: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, also return records that have been superseded by a " +
+              "newer record. Default false — the superseding record is " +
+              "usually what you want.",
+          ),
         includeRestricted: z
           .boolean()
           .optional()
@@ -115,6 +123,7 @@ export async function runMcpServer(): Promise<void> {
           updatedAfter: args.updatedAfter,
           includeDrafts: args.includeDrafts,
           includeDeprecated: args.includeDeprecated,
+          includeSuperseded: args.includeSuperseded,
           // R4 — env-gated. The agent can ASK for restricted records, but
           // the server ignores the flag unless LORE_ALLOW_RESTRICTED_MCP=1
           // is set at startup. Belt-and-braces beyond the schema default.
