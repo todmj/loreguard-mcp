@@ -14,8 +14,12 @@
    Mitigation: records carry `reviewAfter`; search results carry
    `stale: true` when the date has passed; the CLI prints a warning.
 4. **The server itself should not exfiltrate data.**
-   Mitigation: no outbound HTTP code, no telemetry, stdio-only
-   transport. Dependency list is short — audit `package.json`.
+   Mitigation: `lore`'s application code uses stdio transport only and
+   makes no outbound HTTP calls. No telemetry or analytics SDKs.
+   The `@modelcontextprotocol/sdk` dependency does include unused
+   HTTP/client modules; `lore` does not import or configure them.
+   For defence in depth, see the OS-level egress block suggestion in
+   the "Hardening for enterprise" section.
 
 What's NOT in scope:
 
@@ -34,7 +38,7 @@ What's NOT in scope:
 | DB file mode | `0600` (owner read/write) |
 | DB parent dir mode | `0700` |
 | Audit log | `~/.lore/audit.jsonl`, mode `0600`, append-only |
-| Network egress | None. No `fetch`, `axios`, or analytics SDKs in the dep tree. |
+| Network egress | The `lore` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs. |
 | Search excludes by default | `draft`, `deprecated`, `superseded`, `restricted` |
 | `includeRestricted` via MCP | Ignored unless `LORE_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
 
