@@ -14,6 +14,34 @@ it, and get a compact summary back. Full body only on demand.
 
 ## Install
 
+> **Not yet on npm.** Until v0.1.0 lands on the registry, install from
+> source. The package is ESM, Node 20+, and ships a native SQLite binding
+> (`better-sqlite3`) that's built at install time.
+
+```bash
+git clone https://github.com/<your-handle>/lore-mcp.git
+cd lore-mcp
+pnpm install
+pnpm rebuild better-sqlite3   # one-time native build
+pnpm build
+npm link                      # makes `lore` and `lore-mcp` available on $PATH
+lore init
+```
+
+`npm link` symlinks the local `dist/bin/lore.js` and `dist/bin/lore-mcp.js`
+into your global npm prefix, so `lore` and `lore-mcp` work from any
+directory just like an npm-installed package would. To uninstall later:
+
+```bash
+cd lore-mcp && npm unlink -g
+```
+
+Don't want `npm link`? Skip it and reference the absolute path everywhere
+(e.g. in `claude mcp add` — see [Hook it up to Claude Code](#hook-it-up-to-claude-code)
+below).
+
+Once the package is published on npm this will simplify to:
+
 ```bash
 npm i -g lore-mcp
 lore init
@@ -99,9 +127,20 @@ token saving comes from.
 
 ## Hook it up to Claude Code
 
+If you ran `npm link` above:
+
 ```bash
 claude mcp add lore lore-mcp
 ```
+
+If you didn't, point Claude at the local build directly:
+
+```bash
+claude mcp add lore node /absolute/path/to/lore-mcp/dist/bin/lore-mcp.js
+```
+
+(Substitute your actual clone path. `claude mcp list` will show the
+result.)
 
 Claude sees three tools:
 
