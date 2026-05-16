@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { execSync } from "node:child_process";
 
 import { openDb } from "../db/index.js";
 import type { LoreConfidence } from "../db/types.js";
@@ -9,6 +10,8 @@ import {
   approveLore,
   deleteLore,
   deprecateLore,
+  exportLore,
+  findPossibleDuplicates,
   getLore,
   listDrafts,
   listRecent,
@@ -22,8 +25,16 @@ import {
   verifyLore,
 } from "../core/lore.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
+import { cleanDemo, countLore, seedDemo } from "./demo.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
+import {
+  INDUCTION_QUESTIONS,
+  type InductionAnswer,
+  runInduct,
+  shortInductionQuestions,
+  shortRepoNameFromRemote,
+} from "./induct.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
 
@@ -41,7 +52,8 @@ COMMANDS
   search <query...>         Full-text search. Returns brief summaries.
                             Flags: --repo, --tag, --updated-after,
                             --include-drafts, --include-deprecated,
-                            --include-restricted, --limit
+                            --include-superseded, --include-restricted,
+                            --limit
   show <id>                 Print the full record (body included).
   list                      Recent records across all lifecycle states.
   review [--list]           Interactive triage queue: show each pending
@@ -65,6 +77,15 @@ COMMANDS
   delete <id>               Hard-delete the record (events row preserved).
   tags                      Print all distinct tags.
   repos                     Print all distinct repos.
+  export [--out <path>]     Export lore as a single JSON document
+                            (envelope: { schemaVersion, exportedAt,
+                            records }). Default: active + non-restricted
+                            only, stable ordering by updated_at desc.
+                            Without --out, writes to stdout. With --out,
+                            writes the file with mode 0600.
+                            Opt-ins: --include-drafts,
+                            --include-deprecated, --include-superseded,
+                            --include-restricted.
   audit [--n=N] [--raw]     Print the last N audit log lines (default 20)
                             in a redacted human-readable form. Use --raw
                             to see the full JSON instead.
@@ -72,6 +93,19 @@ COMMANDS
                             permissions, FTS index, audit log, restricted
                             MCP gate, version. Exits non-zero on hard
                             failures, zero on warnings.
+  demo [--force | --clean]  Seed five illustrative records (tagged 'demo')
+                            so you can try list / search / review without
+                            authoring content first. Refuses to seed into
+                            a non-empty DB unless --force. Use --clean to
+                            remove the demo records later.
+  induct [--repo <name>] [--short]
+                            Repo-onboarding interview: walks you through
+                            10 high-signal questions (or 5 with --short)
+                            and turns each non-blank answer into a DRAFT
+                            lore record (tagged 'induction', 90-day
+                            review window). Drafts only — promote via
+                            \`lore review\`. Use --repo to override the
+                            auto-detected name (repeatable).
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -150,6 +184,31 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
     process.stdout.write(
       `lore: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,
     );
+    // For drafts (lore suggest), surface near-duplicates so the human
+    // reviewing the queue isn't surprised later. Quiet for `lore add` —
+    // humans entering their own records have already decided.
+    //
+    // CLI runs locally as the trust principal (the human at the terminal),
+    // so restricted records ARE included in the hint list here. The
+    // MCP path is different — that's env-gated.
+    if (asDraft) {
+      const { duplicates } = findPossibleDuplicates(
+        db,
+        { id: lore.id, title, repos, tags },
+        { allowRestricted: true },
+      );
+      if (duplicates.length > 0) {
+        process.stdout.write(
+          `Possible duplicates (review with \`lore show <id>\`):\n`,
+        );
+        for (const d of duplicates) {
+          const restrictedTag = d.restricted ? " [restricted]" : "";
+          process.stdout.write(
+            `  ${d.id}  [${d.status}]${restrictedTag}  ${d.title}\n    reason: ${d.reason}\n`,
+          );
+        }
+      }
+    }
     return 0;
   } finally {
     db.close();
@@ -167,6 +226,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const limit = parseLimit(getString(args.flags, "limit")) ?? 10;
   const includeDrafts = getBool(args.flags, "include-drafts");
   const includeDeprecated = getBool(args.flags, "include-deprecated");
+  const includeSuperseded = getBool(args.flags, "include-superseded");
   const includeRestricted = getBool(args.flags, "include-restricted");
   const db = openDb();
   try {
@@ -178,6 +238,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
       limit,
       includeDrafts,
       includeDeprecated,
+      includeSuperseded,
       includeRestricted,
     });
     if (hits.length === 0) {
@@ -569,6 +630,196 @@ async function cmdRepos(): Promise<number> {
   }
 }
 
+async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const out = getString(args.flags, "out");
+  const includeDrafts = getBool(args.flags, "include-drafts");
+  const includeDeprecated = getBool(args.flags, "include-deprecated");
+  const includeSuperseded = getBool(args.flags, "include-superseded");
+  const includeRestricted = getBool(args.flags, "include-restricted");
+  const db = openDb();
+  try {
+    const records = exportLore(db, {
+      includeDrafts,
+      includeDeprecated,
+      includeSuperseded,
+      includeRestricted,
+    });
+    const envelope = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      records,
+    };
+    const json = JSON.stringify(envelope, null, 2) + "\n";
+    if (out) {
+      writeFileSync(out, json, { encoding: "utf8" });
+      try {
+        chmodSync(out, 0o600);
+      } catch {
+        // best-effort: some filesystems (e.g. Windows under WSL) can't chmod
+      }
+      process.stdout.write(
+        `lore: exported ${records.length} record(s) to ${out}\n`,
+      );
+    } else {
+      process.stdout.write(json);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const force = getBool(args.flags, "force");
+  const clean = getBool(args.flags, "clean");
+  if (force && clean) {
+    process.stderr.write("lore: --force and --clean are mutually exclusive\n");
+    return 2;
+  }
+  const db = openDb();
+  try {
+    if (clean) {
+      const removed = cleanDemo(db);
+      process.stdout.write(
+        removed === 0
+          ? "lore: no demo records found (nothing to clean)\n"
+          : `lore: removed ${removed} demo record(s)\n`,
+      );
+      return 0;
+    }
+    const existing = countLore(db);
+    if (existing > 0 && !force) {
+      process.stderr.write(
+        `lore: refusing to seed demo into a non-empty DB (${existing} record(s) already present).\n` +
+          "      Re-run with --force to seed anyway, or `lore demo --clean` to remove demo records later.\n",
+      );
+      return 1;
+    }
+    const { inserted, ids } = seedDemo(db);
+    process.stdout.write(
+      `lore: seeded ${inserted} demo record(s).\n\n` +
+        `Try:\n` +
+        `  lore list\n` +
+        `  lore search "timezone"\n` +
+        `  lore review        # the demo set includes one draft to triage\n\n` +
+        `Cleanup when you're done:\n` +
+        `  lore demo --clean  # removes only records tagged 'demo'\n`,
+    );
+    // Echo the ids so a curious user can `lore show <id>` immediately.
+    for (const id of ids) process.stdout.write(`  ${id}\n`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Best-effort: read `git config --get remote.origin.url` and parse it
+ * into a short repo name. Returns null on any failure (not in a git
+ * repo, no remote, weird URL shape). The caller falls back to asking.
+ */
+function detectRepoName(): string | null {
+  try {
+    const out = execSync("git config --get remote.origin.url", {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return shortRepoNameFromRemote(out);
+  } catch {
+    return null;
+  }
+}
+
+async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
+  // Repo scope. --repo can be passed multiple times. If absent, try to
+  // autodetect; if that fails, prompt once (skippable).
+  const repoFlags = getStringArray(args.flags, "repo");
+  let repos: string[];
+  if (repoFlags.length > 0) {
+    repos = repoFlags;
+  } else {
+    const detected = detectRepoName();
+    if (detected) {
+      const confirm = (
+        await prompt(
+          `Detected repo '${detected}' — tag drafts with this? [Y/n] `,
+        )
+      )
+        .trim()
+        .toLowerCase();
+      repos = confirm === "n" || confirm === "no" ? [] : [detected];
+    } else {
+      const typed = (
+        await prompt(
+          "No git remote detected. Repo name for these drafts (blank to skip): ",
+        )
+      ).trim();
+      repos = typed ? [typed] : [];
+    }
+  }
+
+  const short = getBool(args.flags, "short");
+  const questions = short ? shortInductionQuestions() : INDUCTION_QUESTIONS;
+
+  process.stdout.write(
+    `\nlore induct — ${questions.length} questions${short ? " (--short)" : ""}. ` +
+      `Answers become DRAFTS (review with \`lore review\` afterwards).\n` +
+      `Press blank-line to skip a question, type 'q' on the answer line to quit early.\n` +
+      (repos.length > 0 ? `Repos: ${repos.join(", ")}\n` : "") +
+      `\n`,
+  );
+
+  const answers: InductionAnswer[] = [];
+  let quitEarly = false;
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i]!;
+    process.stdout.write(
+      `── ${i + 1} of ${questions.length} ── ${q.topic} ──\n${q.prompt}\n`,
+    );
+    const ans = await promptMulti("Answer:");
+    const trimmed = ans.trim();
+    if (trimmed.toLowerCase() === "q") {
+      quitEarly = true;
+      break;
+    }
+    if (trimmed.length === 0) {
+      process.stdout.write("(skipped)\n\n");
+      continue;
+    }
+    const source = (
+      await prompt("Source URL (PR/ADR/incident, blank to skip): ")
+    ).trim();
+    answers.push({
+      questionKey: q.key,
+      answer: trimmed,
+      source: source || undefined,
+    });
+    process.stdout.write("\n");
+  }
+
+  const db = openDb();
+  try {
+    const { created } = runInduct(db, { answers, repos });
+    process.stdout.write(
+      `\nlore induct: created ${created.length} draft(s)` +
+        (quitEarly ? " (quit early — drafts already saved are preserved)" : "") +
+        `.\n`,
+    );
+    for (const c of created) {
+      process.stdout.write(`  ${c.id}  ${c.title}\n`);
+    }
+    if (created.length > 0) {
+      process.stdout.write(
+        `\nReview them with: lore review\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdDoctor(): Promise<number> {
   const { exitCode, checks } = runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
@@ -618,6 +869,7 @@ function formatAuditLine(line: string): string {
     resultCount?: number;
     resultIds?: string[];
     error?: string;
+    blocked?: string;
   };
   try {
     row = JSON.parse(line);
@@ -653,9 +905,11 @@ function formatAuditLine(line: string): string {
   }
   const result = row.error
     ? `→ ERR: ${row.error}`
-    : row.resultCount !== undefined
-      ? `→ ${row.resultCount} hit${row.resultCount === 1 ? "" : "s"}`
-      : "";
+    : row.blocked
+      ? `→ BLOCKED: ${row.blocked}`
+      : row.resultCount !== undefined
+        ? `→ ${row.resultCount} hit${row.resultCount === 1 ? "" : "s"}`
+        : "";
   return `${ts}  ${tool}  ${reqBits.join(" ")}  ${result}`.trim();
 }
 
@@ -721,6 +975,12 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdRepos();
       case "audit":
         return await cmdAudit(parsed);
+      case "export":
+        return await cmdExport(parsed);
+      case "demo":
+        return await cmdDemo(parsed);
+      case "induct":
+        return await cmdInduct(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":

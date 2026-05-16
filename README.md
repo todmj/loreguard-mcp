@@ -1,7 +1,9 @@
 # lore
 
-> Just-in-time local memory for AI coding agents.
-> A local SQLite-backed MCP server + CLI for durable, searchable context.
+> **Reviewed project memory for coding agents.**
+> Agents can suggest reusable project knowledge; humans decide what
+> becomes trusted lore.
+> Local SQLite-backed MCP server + CLI.
 
 Every AI coding session starts cold. Agents re-read the same files, rediscover
 the same conventions, and burn tokens on context you already taught them last
@@ -59,6 +61,85 @@ npm i -g lore-mcp
 lore init
 ```
 
+## 5-minute walkthrough
+
+`lore demo` seeds five illustrative records (tagged `demo`) so you can
+explore the workflow without authoring content first:
+
+```bash
+lore init
+lore demo               # five demo records, one of them a draft, one stale
+lore list               # see what was added
+lore search timezone    # the dates/timezone gotcha; flagged stale
+lore search Argon2id    # high-confidence sourced decision
+lore review             # interactive triage of the draft
+lore show <id>          # full body of any record
+```
+
+When you're done:
+
+```bash
+lore demo --clean       # removes only records tagged 'demo'
+```
+
+`lore demo` refuses to seed into a non-empty DB unless you pass
+`--force`; `--clean` only deletes demo-tagged rows, so it won't touch
+real content.
+
+## Onboarding a repo: `lore induct`
+
+`lore demo` shows the *workflow*; `lore induct` helps you generate
+*real* starting lore for a specific repo. It's a short interactive
+interview — 10 high-signal questions about the things agents tend to
+get wrong on a codebase they've never seen:
+
+- dangerous areas to edit without context;
+- old patterns that shouldn't be copied;
+- architectural decisions that aren't visible from code;
+- migrations / transitions in flight;
+- invariants that must always hold;
+- which tests are authoritative;
+- external systems with surprising behaviour;
+- non-obvious conventions (naming, timezones, auth, permissions);
+- failure modes from past incidents;
+- what a new contributor should ask first.
+
+```bash
+cd ~/code/payments-svc
+lore induct                  # autodetects repo name from git remote
+lore induct --short          # 5 highest-signal questions instead of 10
+lore induct --repo my-svc    # set the repo explicitly (repeatable)
+```
+
+`--short` covers dangerous areas, in-flight migrations, invariants,
+non-obvious conventions, and past incidents — the bits agents most
+often get wrong first. Use it when inducting your tenth repo; use the
+full set the first time.
+
+Every non-blank answer becomes a **DRAFT** record tagged `induction`
+with a 90-day `reviewAfter`. Sourced answers go in as `confidence:
+medium`; unsourced as `low`. Promote what's worth keeping via
+`lore review` — same triage queue agents' suggestions flow through.
+Skip a question with a blank line; quit early by typing `q` (drafts
+already saved are preserved).
+
+This is the opposite of "scan repo and invent memory" — it's a
+human-driven cold-start. Aim answers at non-obvious, high-consequence
+knowledge (see [What deserves lore?](#what-deserves-lore) above);
+"we use TypeScript" goes in `CLAUDE.md`, not here.
+
+> **What not to store**
+>
+> Don't put secrets, credentials, personal data, patient data, or
+> anything your AI client should not receive in a prompt into lore.
+> `lore` is a retrieval index, not a vault — retrieved records are sent
+> to your configured LLM provider as part of the next prompt. The
+> `restricted` flag hides records from default search and, over MCP,
+> blocks direct fetch via `get_lore` unless `LORE_ALLOW_RESTRICTED_MCP=1`.
+> It is still not DLP or a vault: local users can read the DB, and
+> once a restricted record is deliberately retrieved it may enter the
+> LLM prompt.
+
 ## Add a note (human)
 
 Interactively:
@@ -85,6 +166,37 @@ Argon2id with m=64MB, t=3, p=4 is the new baseline." \
 
 Records added by humans default to `status: active` — visible to search.
 
+## What deserves lore?
+
+Lore is most useful when it's small and high-signal. The whole point of
+the review-gated draft flow is to keep it that way.
+
+**Good lore:**
+
+- project-specific conventions (style choices baked into one codebase)
+- architectural decisions (why this pattern, not that one)
+- deprecated patterns (what to use instead, and the source PR)
+- migration rules (what changed, and the contract during the cutover)
+- recurring gotchas (the bug we keep re-introducing)
+- incident lessons (what we learned, link to the write-up)
+- security-sensitive coding rules — **excluding secrets**
+- cross-repo knowledge that agents repeatedly rediscover
+
+**Bad lore:**
+
+- secrets, credentials, tokens, keys (use a secrets manager)
+- personal data, patient data, anything regulated
+- transient task state ("the script we ran last Tuesday")
+- generic programming advice already known to the model
+- unverified agent guesses or session-specific speculation
+- facts obvious from a nearby `README.md` or the code itself
+- always-on preferences — those belong in `CLAUDE.md`
+- anything your AI client should not receive in a prompt
+
+When in doubt, ask: *would a future teammate, six months from now,
+thank me for finding this?* If yes, it's lore. If it's a note to
+yourself for this afternoon, it isn't.
+
 ## Let agents write things down
 
 During a session, Claude can call `suggest_lore` when it discovers something
@@ -110,6 +222,18 @@ This is the poisoning-prevention guard: **agents can suggest knowledge, but
 only humans (via the CLI) can approve, reject, deprecate, or supersede
 records.** The MCP server deliberately exposes no approval tool — agents
 cannot promote their own suggestions.
+
+`suggest_lore` also returns up to 3 `possibleDuplicates` (active or draft
+records with a similar title, optionally weighted by shared repo/tag) so
+the agent can flag near-dupes inline and reviewers spot them at triage.
+Each entry includes a `reason` summarising the matched signals
+(`similar-title`, `shared-repo:<name>`, `shared-tag:<name>`). Hints only —
+suggestions never get blocked.
+
+Restricted records are surfaced as a count (`restrictedDuplicateCount`)
+rather than titles, unless `LORE_ALLOW_RESTRICTED_MCP=1`. Same env gate
+as `search_lore` and `get_lore`. `lore suggest` from the CLI is local and
+shows restricted titles directly with a `[restricted]` marker.
 
 ## Search
 
@@ -140,9 +264,11 @@ no body:
 }
 ```
 
-That's typically 100–200 tokens. The full body lives in `get_lore({ id })`
-and is only fetched when the summary isn't enough — that's where the
-token saving comes from.
+That's typically 100–200 tokens per hit. The full body lives in
+`get_lore({ id })` and is only fetched when the summary isn't enough.
+When lore replaces repeated repo exploration or a long pasted
+explanation, that adds up — but only with curated, compact records.
+Verbose or duplicated lore can grow context, not shrink it.
 
 ## Hook it up to Claude Code
 
@@ -163,9 +289,9 @@ result.)
 
 Claude sees three tools:
 
-- `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeRestricted?, limit? })` — returns brief summaries
+- `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries
 - `get_lore({ id })` — full body of one record
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
 
 The MCP surface is intentionally narrow. Agents can read and suggest;
 **approval, deprecation, and supersession are CLI-only**.
@@ -215,7 +341,10 @@ Use `lore` for **just-in-time** context that's only relevant sometimes:
 repo conventions, service gotchas, incident lessons, migration rules,
 security decisions, cross-repo knowledge. The agent calls `search_lore`
 only when the task warrants it and gets a compact summary back. Full
-body only on demand via `get_lore`. That's the token-saving contract.
+body only on demand via `get_lore`. The primary promise is correctness
+(reviewed knowledge, trust signals, no agent-promoted memory); reduced
+repeated context loading is a consequence — real when records stay
+short and high-signal, lost when they don't.
 
 If a rule applies to every session, it belongs in `CLAUDE.md`. If it
 applies only when you're touching `payments-svc`, it belongs in `lore`.
@@ -231,7 +360,7 @@ Every record carries lifecycle + provenance metadata so retrieval is honest:
 | `confidence` | `low` \| `medium` \| `high`. Default `medium`. *Agent-suggested records cannot claim `high`. Records without a `source` cannot be `high` — invariant enforced at write time.* |
 | `reviewAfter` | ISO date; if past, search flags `stale: true`. |
 | `supersededBy` | ID of the record that replaces this one. |
-| `restricted` | Excluded from search unless `includeRestricted: true`. |
+| `restricted` | Excluded from search unless `includeRestricted: true`. Via MCP, both `search_lore` and `get_lore` are env-gated by `LORE_ALLOW_RESTRICTED_MCP`; with the gate off, `get_lore` of a restricted id returns a minimal refusal (no title/body). |
 | `lastVerifiedAt` | Bumped by `lore verify <id>`. |
 
 `restricted` is a **retrieval guard**, not a data-loss-prevention mechanism.
@@ -251,13 +380,29 @@ local index) is planned for v0.2 but not required for local use.
 Override the path with `LORE_DB=/some/other.db` for tests or alternate
 profiles.
 
+### Inspect / back up your lore
+
+`lore export` writes the DB as a single JSON document so you can read,
+diff, commit, or copy it without touching SQLite directly:
+
+```bash
+lore export                              # stdout, active + non-restricted
+lore export --out lore-backup.json       # file (mode 0600)
+lore export --include-drafts --include-deprecated --include-superseded --include-restricted --out full.json
+```
+
+Envelope: `{ schemaVersion: 1, exportedAt, records: [Lore, ...] }`. Stable
+ordering by `updatedAt desc` with an `id asc` tiebreak — two exports of
+the same DB diff cleanly. Import is not implemented yet; for v0.1 the
+SQLite file remains the source of truth.
+
 ## Security
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-FLOW.md).
 
 **`lore` protects against:**
 
-- Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; MCP `includeRestricted` env-gated).
+- Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; both MCP `search_lore` and `get_lore` env-gated for restricted records).
 - Stale or unreviewed memory dominating retrieval (`stale: true` flag; lifecycle filtering; agent suggestions land as drafts).
 - Audit-log leakage of body content (sanitised pre-write; `lore audit` renders redacted by default).
 

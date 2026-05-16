@@ -4,11 +4,13 @@ import { z } from "zod";
 
 import { audit } from "../core/audit.js";
 import {
+  findPossibleDuplicates,
   getLore,
   searchLore,
   suggestLore,
 } from "../core/lore.js";
 import { openDb } from "../db/index.js";
+import { redactRestricted, shouldGateRestrictedGet } from "./redact.js";
 
 /**
  * R1 — MCP server. Stdio transport only (no network listener). Three
@@ -89,6 +91,14 @@ export async function runMcpServer(): Promise<void> {
           .boolean()
           .optional()
           .describe("If true, also return records the team has marked deprecated."),
+        includeSuperseded: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, also return records that have been superseded by a " +
+              "newer record. Default false — the superseding record is " +
+              "usually what you want.",
+          ),
         includeRestricted: z
           .boolean()
           .optional()
@@ -114,6 +124,7 @@ export async function runMcpServer(): Promise<void> {
           updatedAfter: args.updatedAfter,
           includeDrafts: args.includeDrafts,
           includeDeprecated: args.includeDeprecated,
+          includeSuperseded: args.includeSuperseded,
           // R4 — env-gated. The agent can ASK for restricted records, but
           // the server ignores the flag unless LORE_ALLOW_RESTRICTED_MCP=1
           // is set at startup. Belt-and-braces beyond the schema default.
@@ -173,6 +184,28 @@ export async function runMcpServer(): Promise<void> {
     async (args) => {
       try {
         const lore = getLore(db, args.id);
+        // R4 — restricted gate. `search_lore` already env-gates restricted
+        // retrieval; without a matching gate here, an agent with an id from
+        // a stale audit / CLI output / prior context can bypass the search
+        // filter and fetch the body. Same env knob as search, minimal
+        // refusal shape (no title) so the response itself can't leak.
+        if (shouldGateRestrictedGet(lore, process.env)) {
+          audit({
+            tool: "get_lore",
+            request: args as Record<string, unknown>,
+            resultCount: 1,
+            resultIds: [lore!.id],
+            blocked: "restricted",
+          });
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(redactRestricted(lore!.id), null, 2),
+              },
+            ],
+          };
+        }
         audit({
           tool: "get_lore",
           request: args as Record<string, unknown>,
@@ -271,7 +304,7 @@ export async function runMcpServer(): Promise<void> {
       // This is the trust-model boundary called out in SECURITY.md — the
       // audit log records that a suggestion happened, not the suggestion's
       // contents. To inspect the content, read the SQLite `lore` row.
-      const sanitised = {
+      const sanitised: Record<string, unknown> = {
         title: args.title,
         summaryChars: args.summary.length,
         bodyChars: args.body.length,
@@ -293,6 +326,31 @@ export async function runMcpServer(): Promise<void> {
           team: args.team,
           author: "agent",
         });
+        // Hint-only duplicate check. Never blocks — the human reviewer
+        // decides. Surfaced in the response so the calling agent can warn
+        // the user inline ("I drafted this but here are 2 similar
+        // existing records"), and counted in the audit so a human reading
+        // ~/.lore/audit.jsonl can see how often agents suggest near-dupes.
+        //
+        // Restricted handling: titles of restricted records are not
+        // surfaced unless LORE_ALLOW_RESTRICTED_MCP=1 (same env knob that
+        // governs search and get). Restricted matches are still counted
+        // so the response can say "and N more we're not showing you".
+        const allowRestricted =
+          process.env["LORE_ALLOW_RESTRICTED_MCP"] === "1";
+        const { duplicates: possibleDuplicates, restrictedDuplicateCount } =
+          findPossibleDuplicates(
+            db,
+            {
+              id: lore.id,
+              title: args.title,
+              repos: args.repos,
+              tags: args.tags,
+            },
+            { allowRestricted },
+          );
+        sanitised["possibleDuplicateCount"] = possibleDuplicates.length;
+        sanitised["restrictedDuplicateCount"] = restrictedDuplicateCount;
         audit({
           tool: "suggest_lore",
           request: sanitised,
@@ -310,6 +368,8 @@ export async function runMcpServer(): Promise<void> {
                   message:
                     "Draft created. A human will review with `lore review` and " +
                     "promote with `lore approve " + lore.id + "`.",
+                  possibleDuplicates,
+                  restrictedDuplicateCount,
                 },
                 null,
                 2,

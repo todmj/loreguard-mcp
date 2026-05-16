@@ -41,6 +41,7 @@ What's NOT in scope:
 | Network egress | The `lore` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs. |
 | Search excludes by default | `draft`, `deprecated`, `superseded`, `restricted` |
 | `includeRestricted` via MCP | Ignored unless `LORE_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
+| `get_lore` of a restricted id via MCP | Same gate as `includeRestricted`. With the gate off, `get_lore` returns a minimal refusal (`{ id, restricted: true, error: "restricted", hint: "..." }`) — no title, no summary, no body, no source — and audits the blocked attempt with `blocked: "restricted"`. With the gate on, returns the full record. CLI `lore show <id>` is unaffected. |
 
 ## Audit log
 
@@ -53,6 +54,20 @@ Every MCP tool call lands in `~/.lore/audit.jsonl`:
   "request": { "query": "password hashing", "repo": "payments-svc" },
   "resultCount": 2,
   "resultIds": ["7vk3qm9b", "h44z8n3q"]
+}
+```
+
+A blocked `get_lore` for a restricted id (with `LORE_ALLOW_RESTRICTED_MCP`
+unset) looks like:
+
+```json
+{
+  "ts": "2026-05-16T11:33:02.118Z",
+  "tool": "get_lore",
+  "request": { "id": "7vk3qm9b" },
+  "resultCount": 1,
+  "resultIds": ["7vk3qm9b"],
+  "blocked": "restricted"
 }
 ```
 

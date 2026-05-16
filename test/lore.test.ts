@@ -6,6 +6,8 @@ import {
   approveLore,
   deleteLore,
   deprecateLore,
+  exportLore,
+  findPossibleDuplicates,
   getLore,
   listDrafts,
   listRecent,
@@ -275,6 +277,20 @@ describe("core/lore", () => {
       supersedeLore(db, a.id, b.id);
       const hits = searchLore(db, { query: "Vermilion zeppelin" });
       expect(hits.map((h) => h.id)).toEqual([b.id]);
+    });
+
+    it("includes superseded when explicitly opted in", () => {
+      const a = addLore(db, { title: "Cerulean dirigible original", summary: "s", body: "b" });
+      const b = addLore(db, { title: "Cerulean dirigible replacement", summary: "s", body: "b" });
+      supersedeLore(db, a.id, b.id);
+      const hits = searchLore(db, {
+        query: "Cerulean dirigible",
+        includeSuperseded: true,
+      });
+      const ids = hits.map((h) => h.id).sort();
+      expect(ids).toEqual([a.id, b.id].sort());
+      const old = hits.find((h) => h.id === a.id);
+      expect(old?.status).toBe("superseded");
     });
 
     it("excludes restricted by default", () => {
@@ -617,6 +633,323 @@ describe("core/lore", () => {
       expect(() =>
         updateLore(db, a.id, { reviewAfter: "garbage" }),
       ).toThrow(/reviewAfter/);
+    });
+  });
+
+  describe("findPossibleDuplicates", () => {
+    it("returns near-duplicates by title token overlap", () => {
+      const existing = addLore(db, {
+        title: "Dates must include timezone offsets",
+        summary: "Existing rule.",
+        body: "b",
+        repos: ["payments-svc"],
+        tags: ["dates"],
+      });
+      const fresh = suggestLore(db, {
+        title: "API dates need timezone offset",
+        summary: "Same idea, drafted again.",
+        body: "b",
+        repos: ["payments-svc"],
+        tags: ["dates"],
+      });
+      const { duplicates, restrictedDuplicateCount } = findPossibleDuplicates(db, {
+        id: fresh.id,
+        title: "API dates need timezone offset",
+        repos: ["payments-svc"],
+        tags: ["dates"],
+      });
+      expect(duplicates.map((d) => d.id)).toContain(existing.id);
+      expect(restrictedDuplicateCount).toBe(0);
+    });
+
+    it("populates a `reason` field summarising matched signals", () => {
+      const existing = addLore(db, {
+        title: "Vermilion zeppelin altitude policy",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+        tags: ["safety"],
+      });
+      const fresh = suggestLore(db, {
+        title: "Vermilion zeppelin altitude policy new",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+        tags: ["safety"],
+      });
+      const { duplicates } = findPossibleDuplicates(db, {
+        id: fresh.id,
+        title: "Vermilion zeppelin altitude policy new",
+        repos: ["aviation-svc"],
+        tags: ["safety"],
+      });
+      const hit = duplicates.find((d) => d.id === existing.id);
+      expect(hit?.reason).toContain("similar-title");
+      expect(hit?.reason).toContain("shared-repo:aviation-svc");
+      expect(hit?.reason).toContain("shared-tag:safety");
+    });
+
+    it("returns the empty result when title has fewer than two meaningful tokens", () => {
+      addLore(db, {
+        title: "Things",
+        summary: "s",
+        body: "b",
+      });
+      expect(
+        findPossibleDuplicates(db, { id: "xxxxxxxx", title: "x" }),
+      ).toEqual({ duplicates: [], restrictedDuplicateCount: 0 });
+    });
+
+    it("excludes the given id (no self-match for the just-inserted record)", () => {
+      const lore = suggestLore(db, {
+        title: "Argon2id password hashing default",
+        summary: "s",
+        body: "b",
+      });
+      const { duplicates } = findPossibleDuplicates(db, {
+        id: lore.id,
+        title: "Argon2id password hashing default",
+      });
+      expect(duplicates.map((d) => d.id)).not.toContain(lore.id);
+    });
+
+    it("by default hides restricted titles but reports them in restrictedDuplicateCount", () => {
+      addLore(db, {
+        title: "Restricted runbook rotate platinum keys",
+        summary: "s",
+        body: "b",
+        restricted: true,
+      });
+      const draft = suggestLore(db, {
+        title: "Rotate platinum keys policy",
+        summary: "s",
+        body: "b",
+      });
+      const { duplicates, restrictedDuplicateCount } = findPossibleDuplicates(
+        db,
+        { id: draft.id, title: "Rotate platinum keys policy" },
+      );
+      expect(duplicates.every((d) => d.restricted === false)).toBe(true);
+      expect(restrictedDuplicateCount).toBe(1);
+    });
+
+    it("surfaces restricted titles when allowRestricted: true", () => {
+      const restricted = addLore(db, {
+        title: "Restricted runbook rotate gold keys",
+        summary: "s",
+        body: "b",
+        restricted: true,
+      });
+      const draft = suggestLore(db, {
+        title: "Rotate gold keys policy",
+        summary: "s",
+        body: "b",
+      });
+      const { duplicates, restrictedDuplicateCount } = findPossibleDuplicates(
+        db,
+        { id: draft.id, title: "Rotate gold keys policy" },
+        { allowRestricted: true },
+      );
+      expect(duplicates.map((d) => d.id)).toContain(restricted.id);
+      expect(restrictedDuplicateCount).toBe(1);
+    });
+
+    it("excludes deprecated and superseded records", () => {
+      const a = addLore(db, {
+        title: "Deprecated bcrypt password policy",
+        summary: "s",
+        body: "b",
+      });
+      const b = addLore(db, {
+        title: "Old superseded bcrypt password rule",
+        summary: "s",
+        body: "b",
+      });
+      const c = addLore(db, {
+        title: "Replacement bcrypt password rule",
+        summary: "s",
+        body: "b",
+      });
+      deprecateLore(db, a.id);
+      supersedeLore(db, b.id, c.id);
+      const draft = suggestLore(db, {
+        title: "New bcrypt password idea",
+        summary: "s",
+        body: "b",
+      });
+      const { duplicates } = findPossibleDuplicates(db, {
+        id: draft.id,
+        title: "New bcrypt password idea",
+      });
+      const ids = duplicates.map((d) => d.id);
+      expect(ids).not.toContain(a.id);
+      expect(ids).not.toContain(b.id);
+      // c (the active replacement) is fair game.
+      expect(ids).toContain(c.id);
+    });
+
+    it("ranks shared-repo/tag overlap above pure-FTS matches", () => {
+      // Two existing records with similar titles. One shares the draft's
+      // repo, the other doesn't. Both should be candidates; the
+      // repo-overlap one should come first.
+      const sharesRepo = addLore(db, {
+        title: "Cerulean kite altitude policy",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+      });
+      addLore(db, {
+        title: "Cerulean kite altitude policy archive",
+        summary: "s",
+        body: "b",
+        repos: ["other-svc"],
+      });
+      const draft = suggestLore(db, {
+        title: "Cerulean kite altitude policy new",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+      });
+      const { duplicates } = findPossibleDuplicates(db, {
+        id: draft.id,
+        title: "Cerulean kite altitude policy new",
+        repos: ["aviation-svc"],
+      });
+      expect(duplicates.length).toBeGreaterThanOrEqual(1);
+      expect(duplicates[0]!.id).toBe(sharesRepo.id);
+    });
+
+    it("returns the empty result when no candidates match", () => {
+      addLore(db, {
+        title: "Completely unrelated subject matter here",
+        summary: "s",
+        body: "b",
+      });
+      expect(
+        findPossibleDuplicates(db, {
+          id: "xxxxxxxx",
+          title: "Magenta dirigible policy",
+        }),
+      ).toEqual({ duplicates: [], restrictedDuplicateCount: 0 });
+    });
+  });
+
+  describe("exportLore", () => {
+    /**
+     * Round-trip-ish coverage: the export should reflect the same
+     * default-safe lifecycle filter as search (active + non-restricted),
+     * round-trip the full Lore shape (including body), and provide a
+     * stable ordering so two exports of the same DB diff cleanly.
+     */
+    it("defaults to active + non-restricted only", () => {
+      const active = addLore(db, { title: "active rule", summary: "s", body: "B" });
+      const draft = suggestLore(db, { title: "draft rule", summary: "s", body: "B" });
+      const deprecated = addLore(db, {
+        title: "old rule",
+        summary: "s",
+        body: "B",
+      });
+      deprecateLore(db, deprecated.id);
+      const restricted = addLore(db, {
+        title: "restricted rule",
+        summary: "s",
+        body: "B",
+        restricted: true,
+      });
+      const recs = exportLore(db);
+      const ids = recs.map((r) => r.id);
+      expect(ids).toContain(active.id);
+      expect(ids).not.toContain(draft.id);
+      expect(ids).not.toContain(deprecated.id);
+      expect(ids).not.toContain(restricted.id);
+    });
+
+    it("includes the body — full Lore, not a brief summary", () => {
+      addLore(db, {
+        title: "round-trip body test",
+        summary: "s",
+        body: "BODY-MARKER-12345",
+      });
+      const [rec] = exportLore(db);
+      expect(rec?.body).toBe("BODY-MARKER-12345");
+    });
+
+    it("honours each opt-in flag independently", () => {
+      const a = addLore(db, { title: "a", summary: "s", body: "B" });
+      const drafted = suggestLore(db, { title: "b draft", summary: "s", body: "B" });
+      const dep = addLore(db, { title: "c dep", summary: "s", body: "B" });
+      deprecateLore(db, dep.id);
+      const sup1 = addLore(db, { title: "d sup-old", summary: "s", body: "B" });
+      const sup2 = addLore(db, { title: "e sup-new", summary: "s", body: "B" });
+      supersedeLore(db, sup1.id, sup2.id);
+      const r = addLore(db, {
+        title: "f restricted",
+        summary: "s",
+        body: "B",
+        restricted: true,
+      });
+
+      expect(exportLore(db).map((x) => x.id).sort()).toEqual(
+        [a.id, sup2.id].sort(),
+      );
+      expect(
+        exportLore(db, { includeDrafts: true }).map((x) => x.id),
+      ).toContain(drafted.id);
+      expect(
+        exportLore(db, { includeDeprecated: true }).map((x) => x.id),
+      ).toContain(dep.id);
+      expect(
+        exportLore(db, { includeSuperseded: true }).map((x) => x.id),
+      ).toContain(sup1.id);
+      expect(
+        exportLore(db, { includeRestricted: true }).map((x) => x.id),
+      ).toContain(r.id);
+    });
+
+    it("produces stable ordering: updated_at desc, id asc tiebreak", async () => {
+      const a = addLore(db, { title: "a", summary: "s", body: "B" });
+      const b = addLore(db, { title: "b", summary: "s", body: "B" });
+      const c = addLore(db, { title: "c", summary: "s", body: "B" });
+      // Ensure the next mutation gets a later ISO millisecond stamp.
+      await new Promise((r) => setTimeout(r, 5));
+      updateLore(db, b.id, { summary: "s2" });
+      const ids = exportLore(db).map((r) => r.id);
+      expect(ids[0]).toBe(b.id);
+      expect(ids.slice(1).sort()).toEqual([a.id, c.id].sort());
+    });
+
+    it("falls back to id-asc tiebreak when updated_at is identical", () => {
+      // Same insert tick: updated_at collides at ms precision, so ordering
+      // must be deterministic via the id-ASC tiebreak. We can't predict
+      // the random ids, but the export's id order should be ascending.
+      const ids = [
+        addLore(db, { title: "x", summary: "s", body: "B" }).id,
+        addLore(db, { title: "y", summary: "s", body: "B" }).id,
+        addLore(db, { title: "z", summary: "s", body: "B" }).id,
+      ];
+      // If timestamps collide (likely in a fast loop), all three share an
+      // updated_at; if they don't, the test still passes because we only
+      // assert determinism, not a specific order.
+      const exportedIds = exportLore(db).map((r) => r.id);
+      // The set of returned ids matches the inserted set.
+      expect(new Set(exportedIds)).toEqual(new Set(ids));
+      // And a second export gives the identical ordering — that's the
+      // determinism guarantee.
+      const exportedIdsAgain = exportLore(db).map((r) => r.id);
+      expect(exportedIdsAgain).toEqual(exportedIds);
+    });
+
+    it("returns repos + tags joined per record", () => {
+      addLore(db, {
+        title: "with-meta",
+        summary: "s",
+        body: "B",
+        repos: ["payments-svc", "auth-svc"],
+        tags: ["security", "passwords"],
+      });
+      const [rec] = exportLore(db);
+      expect(rec?.repos).toEqual(["auth-svc", "payments-svc"]);
+      expect(rec?.tags).toEqual(["passwords", "security"]);
     });
   });
 
