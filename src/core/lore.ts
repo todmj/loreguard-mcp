@@ -624,6 +624,158 @@ function toFtsQuery(input: string): string {
   return parts.map((p) => `"${p}"`).join(" ");
 }
 
+export interface PossibleDuplicate extends LoreSummary {
+  /**
+   * Human-readable signal summary explaining why this record was surfaced
+   * as a duplicate candidate ("similar-title; shared-repo:payments-svc"
+   * etc). Hint-grade; the reviewer makes the call.
+   */
+  readonly reason: string;
+}
+
+export interface PossibleDuplicateResult {
+  /**
+   * Records the caller is allowed to see. By default this excludes
+   * restricted records; pass `allowRestricted: true` to include them
+   * (the MCP layer wires this to LORE_ALLOW_RESTRICTED_MCP).
+   */
+  readonly duplicates: PossibleDuplicate[];
+  /**
+   * Count of matching restricted records — always populated, regardless
+   * of whether they ended up in `duplicates`. Lets the agent / CLI say
+   * "and N more we're not showing you" without leaking titles.
+   */
+  readonly restrictedDuplicateCount: number;
+}
+
+/**
+ * Reviewer aid for suggest_lore: given a record's title (+ optional repo/tag
+ * scope), return up to `limit` existing records that look similar — so the
+ * agent's response (and the human reviewer) can spot near-duplicates before
+ * they accumulate. Hints only: never blocks a suggestion.
+ *
+ * Ranking: FTS bm25 on title tokens, with a small overlap bonus for records
+ * sharing any of the requested repos or tags. The bonus is deliberately
+ * coarse — it's a hint, not authoritative.
+ *
+ * Scope:
+ *   - Considers `active` + `draft` records (not deprecated / superseded —
+ *     those are tombstones; the reviewer doesn't need to know about them).
+ *   - Excludes the just-inserted record itself (caller passes its id).
+ *   - Restricted records are excluded from `duplicates` by default but
+ *     counted in `restrictedDuplicateCount`. Pass `allowRestricted: true`
+ *     (the MCP server wires this to LORE_ALLOW_RESTRICTED_MCP) to include
+ *     restricted titles in `duplicates` instead.
+ *
+ * Returns an empty result when the title is too short for meaningful
+ * matching (< 2 tokens of length ≥ 3) rather than guessing.
+ */
+export function findPossibleDuplicates(
+  db: Database,
+  input: {
+    id: string;
+    title: string;
+    repos?: ReadonlyArray<string>;
+    tags?: ReadonlyArray<string>;
+  },
+  options: { allowRestricted?: boolean; limit?: number } = {},
+): PossibleDuplicateResult {
+  const empty: PossibleDuplicateResult = {
+    duplicates: [],
+    restrictedDuplicateCount: 0,
+  };
+  const tokens = tokenizeTitleForDuplicates(input.title);
+  if (tokens.length < 2) return empty;
+  const limit = options.limit ?? 3;
+  const allowRestricted = options.allowRestricted ?? false;
+  // OR the tokens so we surface any partial overlap. FTS5 OR is the default
+  // join, but spell it out for clarity. Note we DON'T filter restricted at
+  // the SQL level — we need to count restricted matches even when we don't
+  // surface them.
+  const ftsQuery = tokens.map((t) => `"${t}"`).join(" OR ");
+  const rows = db
+    .prepare(
+      `SELECT l.*, bm25(lore_fts) AS score
+       FROM lore l JOIN lore_fts fts ON fts.rowid = l.rowid
+       WHERE lore_fts MATCH ?
+         AND l.id != ?
+         AND l.status IN ('active', 'draft')
+       ORDER BY score ASC
+       LIMIT 40`,
+    )
+    .all(ftsQuery, input.id) as Array<LoreRow & { score: number }>;
+
+  const wantRepos = new Set(
+    (input.repos ?? []).map(normaliseRepo).filter(Boolean),
+  );
+  const wantTags = new Set(
+    (input.tags ?? []).map(normaliseTag).filter(Boolean),
+  );
+
+  let restrictedDuplicateCount = 0;
+  type Scored = {
+    row: LoreRow & { score: number };
+    repos: string[];
+    tags: string[];
+    sharedRepos: string[];
+    sharedTags: string[];
+    overlap: number;
+  };
+  const scored: Scored[] = [];
+  for (const row of rows) {
+    if (row.restricted === 1) {
+      restrictedDuplicateCount++;
+      if (!allowRestricted) continue;
+    }
+    const repos = reposOf(db, row.id);
+    const tags = tagsOf(db, row.id);
+    const sharedRepos = repos.filter((r) => wantRepos.has(r));
+    const sharedTags = tags.filter((t) => wantTags.has(t));
+    scored.push({
+      row,
+      repos,
+      tags,
+      sharedRepos,
+      sharedTags,
+      overlap: sharedRepos.length + sharedTags.length,
+    });
+  }
+  scored.sort((a, b) => {
+    if (a.overlap !== b.overlap) return b.overlap - a.overlap;
+    return a.row.score - b.row.score;
+  });
+  const duplicates: PossibleDuplicate[] = scored
+    .slice(0, limit)
+    .map((s) => {
+      const summary = rowToSummary(s.row, s.repos, s.tags, s.row.score);
+      const signals: string[] = ["similar-title"];
+      if (s.sharedRepos.length > 0) {
+        signals.push(`shared-repo:${s.sharedRepos.join(",")}`);
+      }
+      if (s.sharedTags.length > 0) {
+        signals.push(`shared-tag:${s.sharedTags.join(",")}`);
+      }
+      return { ...summary, reason: signals.join("; ") };
+    });
+  return { duplicates, restrictedDuplicateCount };
+}
+
+/**
+ * Title tokenizer for duplicate detection: lowercase, split on non-alnum,
+ * drop tokens shorter than 3 chars (too noisy: "a", "is", "to"), dedupe,
+ * cap at 6 tokens so the FTS query stays cheap.
+ */
+function tokenizeTitleForDuplicates(title: string): string[] {
+  return Array.from(
+    new Set(
+      title
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 3),
+    ),
+  ).slice(0, 6);
+}
+
 /**
  * Recent lore across all lifecycle states (active + draft + deprecated),
  * freshest first. Used by `lore list` for at-a-glance browse.
@@ -647,6 +799,47 @@ export function listDrafts(db: Database): LoreSummary[] {
   return rows.map((r) =>
     rowToSummary(r, reposOf(db, r.id), tagsOf(db, r.id)),
   );
+}
+
+/**
+ * Bulk export — full Lore records (body included). Caller-controlled
+ * lifecycle filter, mirroring `searchLore` semantics: defaults to active +
+ * non-restricted; opt in to each other class explicitly. Stable ordering
+ * (updated_at desc, id asc tiebreak) so two exports of the same DB diff
+ * cleanly.
+ *
+ * NOT exposed via MCP — this is a CLI-only path. The agent gets brief
+ * summaries via search and the body of one record at a time via get;
+ * bulk extraction is a human operation.
+ */
+export function exportLore(
+  db: Database,
+  opts: {
+    includeDrafts?: boolean;
+    includeDeprecated?: boolean;
+    includeSuperseded?: boolean;
+    includeRestricted?: boolean;
+  } = {},
+): Lore[] {
+  const allowedStatuses: LoreStatus[] = ["active"];
+  if (opts.includeDrafts) allowedStatuses.push("draft");
+  if (opts.includeDeprecated) allowedStatuses.push("deprecated");
+  if (opts.includeSuperseded) allowedStatuses.push("superseded");
+
+  const filters: string[] = [
+    `status IN (${allowedStatuses.map(() => "?").join(",")})`,
+  ];
+  const params: Array<string | number> = [...allowedStatuses];
+  if (!opts.includeRestricted) {
+    filters.push("restricted = 0");
+  }
+  const sql = `
+    SELECT * FROM lore
+    WHERE ${filters.join(" AND ")}
+    ORDER BY updated_at DESC, id ASC
+  `;
+  const rows = db.prepare(sql).all(...params) as LoreRow[];
+  return rows.map((row) => rowToLore(row, reposOf(db, row.id), tagsOf(db, row.id)));
 }
 
 export function listTags(db: Database): string[] {

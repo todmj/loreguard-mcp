@@ -18,6 +18,14 @@ export interface AuditRecord {
   readonly resultCount?: number;
   readonly resultIds?: ReadonlyArray<string>;
   readonly error?: string;
+  /**
+   * Set when a tool call's response was deliberately suppressed by a
+   * trust gate (e.g. `get_lore` returning a refusal for a restricted
+   * record while `LORE_ALLOW_RESTRICTED_MCP` is off). The audit row
+   * still records the request and the resolved id so a human can see
+   * the gate fired, but distinct from an `error`.
+   */
+  readonly blocked?: string;
 }
 
 function defaultAuditPath(): string {
