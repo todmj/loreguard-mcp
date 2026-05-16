@@ -112,13 +112,39 @@ Claude sees three tools:
 The MCP surface is intentionally narrow. Agents can read and suggest;
 **approval, deprecation, and supersession are CLI-only**.
 
-Prompt suggestion (drop in your `CLAUDE.md`):
+## Tell your agent when to use lore
+
+Installing the MCP server only exposes the tools. To make agents use them
+consistently, add a short retrieval rule to your agent instructions
+(`CLAUDE.md`, Cursor rules, your coding skill, etc.):
 
 ```md
-Before non-trivial code changes, search `lore` for the repo name and the
-subsystem you're touching (auth, dates, migrations, deploy, payments).
-Trust active records with matching repo scope first; treat stale
-(`stale: true`) and `confidence: low` results as starting points, not authority.
+Before non-trivial or context-sensitive code changes, search `lore` for
+relevant local memory.
+
+Search when the task touches:
+- auth/security
+- dates/timezones
+- migrations/schema changes
+- payments/billing
+- API contracts
+- deployment/infra
+- cross-repo conventions
+- unfamiliar services or subsystems
+
+Call `search_lore` first with the repo name, subsystem, and kind of change.
+Prefer records that are `active`, scoped to the current repo/team/tag,
+not stale, medium/high confidence, and backed by a source.
+
+Treat stale, low-confidence, source-less, deprecated, or conflicting
+records as clues, not authority. If lore conflicts with the repo, tests,
+or the user's explicit instruction, surface the conflict before proceeding.
+
+Only call `get_lore` when the summary is not enough.
+
+At the end of the task, call `suggest_lore` only if you discovered a
+reusable convention, gotcha, decision, or service-specific rule that
+would help future agents. Do not save temporary task state or speculation.
 ```
 
 ## Trust model
