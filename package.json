@@ -18,13 +18,13 @@
   ],
   "license": "MIT",
   "author": "tmj <tommj_723@yahoo.co.uk>",
-  "homepage": "https://github.com/todmj/lore-mcp#readme",
+  "homepage": "https://github.com/todmj/loreguard-mcp#readme",
   "bugs": {
-    "url": "https://github.com/todmj/lore-mcp/issues"
+    "url": "https://github.com/todmj/loreguard-mcp/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/todmj/lore-mcp.git"
+    "url": "git+https://github.com/todmj/loreguard-mcp.git"
   },
   "type": "module",
   "main": "dist/index.js",
