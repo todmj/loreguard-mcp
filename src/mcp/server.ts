@@ -9,6 +9,7 @@ import {
   suggestLore,
 } from "../core/lore.js";
 import { openDb } from "../db/index.js";
+import { redactRestricted, shouldGateRestrictedGet } from "./redact.js";
 
 /**
  * R1 — MCP server. Stdio transport only (no network listener). Three
@@ -173,6 +174,28 @@ export async function runMcpServer(): Promise<void> {
     async (args) => {
       try {
         const lore = getLore(db, args.id);
+        // R4 — restricted gate. `search_lore` already env-gates restricted
+        // retrieval; without a matching gate here, an agent with an id from
+        // a stale audit / CLI output / prior context can bypass the search
+        // filter and fetch the body. Same env knob as search, minimal
+        // refusal shape (no title) so the response itself can't leak.
+        if (shouldGateRestrictedGet(lore, process.env)) {
+          audit({
+            tool: "get_lore",
+            request: args as Record<string, unknown>,
+            resultCount: 1,
+            resultIds: [lore!.id],
+            blocked: "restricted",
+          });
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(redactRestricted(lore!.id), null, 2),
+              },
+            ],
+          };
+        }
         audit({
           tool: "get_lore",
           request: args as Record<string, unknown>,

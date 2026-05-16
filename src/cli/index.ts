@@ -618,6 +618,7 @@ function formatAuditLine(line: string): string {
     resultCount?: number;
     resultIds?: string[];
     error?: string;
+    blocked?: string;
   };
   try {
     row = JSON.parse(line);
@@ -653,9 +654,11 @@ function formatAuditLine(line: string): string {
   }
   const result = row.error
     ? `→ ERR: ${row.error}`
-    : row.resultCount !== undefined
-      ? `→ ${row.resultCount} hit${row.resultCount === 1 ? "" : "s"}`
-      : "";
+    : row.blocked
+      ? `→ BLOCKED: ${row.blocked}`
+      : row.resultCount !== undefined
+        ? `→ ${row.resultCount} hit${row.resultCount === 1 ? "" : "s"}`
+        : "";
   return `${ts}  ${tool}  ${reqBits.join(" ")}  ${result}`.trim();
 }
 
