@@ -235,6 +235,175 @@ export function addLore(db: Database, input: AddLoreInput): Lore {
 }
 
 /**
+ * Shape used by `lore sync import`: a full Lore record reconstructed
+ * from a Markdown file's frontmatter. Differs from AddLoreInput in
+ * three ways:
+ *
+ *   - `id` is REQUIRED — the .md file's id is the round-trip key. We
+ *     never allocate a new id during import.
+ *   - `status` is REQUIRED and authoritative. The PR review is the
+ *     trust gate; whatever the file says wins.
+ *   - `createdAt` / `updatedAt` are optional but, when present,
+ *     preserved (so two exports of the same DB diff cleanly).
+ *
+ * Confidence is still clamped (no `high` without a source) — that's a
+ * core invariant, not a stylistic choice.
+ */
+export interface ImportLoreInput {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly body: string;
+  readonly status: LoreStatus;
+  readonly author?: string;
+  readonly team?: string;
+  readonly source?: string;
+  readonly reviewAfter?: string;
+  readonly confidence?: LoreConfidence;
+  readonly repos?: ReadonlyArray<string>;
+  readonly tags?: ReadonlyArray<string>;
+  readonly restricted?: boolean;
+  readonly supersededBy?: string;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+  readonly lastVerifiedAt?: string;
+}
+
+export interface ImportResult {
+  readonly id: string;
+  readonly created: boolean;
+}
+
+/**
+ * Upsert a single record by id, used by `lore sync import`. Creates
+ * a new row when the id is unknown; otherwise updates every field
+ * (status included — unlike `updateLore`, which deliberately refuses
+ * status changes because the interactive paths go through
+ * approve/deprecate/supersede). The PR is the lifecycle gate for sync,
+ * so `import` is the one place we let status move freely.
+ *
+ * Confidence still clamps via `clampConfidence` (no `high` without a
+ * source; no `high` on a draft). FTS is reindexed. The events row uses
+ * `imported` so the audit trail distinguishes sync from interactive
+ * authorship.
+ */
+export function upsertLoreFromImport(
+  db: Database,
+  input: ImportLoreInput,
+): ImportResult {
+  assertIsoDate(input.reviewAfter, "reviewAfter");
+  assertIsoDate(input.createdAt, "createdAt");
+  assertIsoDate(input.updatedAt, "updatedAt");
+  assertIsoDate(input.lastVerifiedAt, "lastVerifiedAt");
+  assertHttpUrl(input.source, "source");
+
+  const repos = Array.from(
+    new Set((input.repos ?? []).map(normaliseRepo).filter(Boolean)),
+  ).sort();
+  const tags = Array.from(
+    new Set((input.tags ?? []).map(normaliseTag).filter(Boolean)),
+  ).sort();
+  const confidence = clampConfidence(
+    input.confidence,
+    !!input.source,
+    input.status,
+  );
+  const nowTs = nowIso();
+  const createdAt = input.createdAt ?? nowTs;
+  const updatedAt = input.updatedAt ?? nowTs;
+
+  const existing = db
+    .prepare("SELECT rowid FROM lore WHERE id = ?")
+    .get(input.id) as { rowid: number } | undefined;
+  const isCreate = !existing;
+
+  const tx = db.transaction(() => {
+    if (isCreate) {
+      const info = db
+        .prepare(
+          `INSERT INTO lore (
+            id, title, summary, body, author, team,
+            status, source, review_after, confidence,
+            superseded_by, restricted,
+            created_at, updated_at, last_verified_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.id,
+          input.title,
+          input.summary,
+          input.body,
+          input.author ?? null,
+          input.team ?? null,
+          input.status,
+          input.source ?? null,
+          input.reviewAfter ?? null,
+          confidence,
+          input.supersededBy ?? null,
+          input.restricted ? 1 : 0,
+          createdAt,
+          updatedAt,
+          input.lastVerifiedAt ?? null,
+        );
+      const rowid = Number(info.lastInsertRowid);
+      db.prepare(
+        "INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)",
+      ).run(rowid, input.title, input.summary, input.body);
+    } else {
+      db.prepare(
+        `UPDATE lore SET
+           title = ?, summary = ?, body = ?,
+           author = ?, team = ?, status = ?,
+           source = ?, review_after = ?, confidence = ?,
+           superseded_by = ?, restricted = ?,
+           updated_at = ?, last_verified_at = ?
+         WHERE id = ?`,
+      ).run(
+        input.title,
+        input.summary,
+        input.body,
+        input.author ?? null,
+        input.team ?? null,
+        input.status,
+        input.source ?? null,
+        input.reviewAfter ?? null,
+        confidence,
+        input.supersededBy ?? null,
+        input.restricted ? 1 : 0,
+        updatedAt,
+        input.lastVerifiedAt ?? null,
+        input.id,
+      );
+      const rowid = (
+        db.prepare("SELECT rowid FROM lore WHERE id = ?").get(input.id) as {
+          rowid: number;
+        }
+      ).rowid;
+      db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(rowid);
+      db.prepare(
+        "INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)",
+      ).run(rowid, input.title, input.summary, input.body);
+    }
+    // Replace repos + tags atomically.
+    db.prepare("DELETE FROM lore_repos WHERE lore_id = ?").run(input.id);
+    const repoIns = db.prepare(
+      "INSERT INTO lore_repos (lore_id, repo) VALUES (?, ?)",
+    );
+    for (const r of repos) repoIns.run(input.id, r);
+    db.prepare("DELETE FROM lore_tags WHERE lore_id = ?").run(input.id);
+    const tagIns = db.prepare(
+      "INSERT INTO lore_tags (lore_id, tag) VALUES (?, ?)",
+    );
+    for (const t of tags) tagIns.run(input.id, t);
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts) VALUES (?, 'imported', ?)",
+    ).run(input.id, nowTs);
+  });
+  tx();
+  return { id: input.id, created: isCreate };
+}
+
+/**
  * Agent-authored entry. Always lands as `status: 'draft'` — hidden from
  * default search until a human runs `lore approve <id>`. This is the
  * tool the MCP server exposes; agents cannot promote their own records.
@@ -563,9 +732,14 @@ export function searchLore(
   let select: string;
   if (hasFts) {
     from = `lore l JOIN lore_fts fts ON fts.rowid = l.rowid`;
-    select = `l.*, bm25(lore_fts) AS score`;
+    // bm25 column weights: title is the strongest authority signal,
+    // summary is curated short-form, body is the long tail. Heavier
+    // weight = more contribution to relevance for matches in that
+    // column. Order matches the FTS table definition (title, summary,
+    // body). Values picked to be opinionated but not extreme.
+    select = `l.*, bm25(lore_fts, 3.0, 2.0, 1.0) AS score`;
     filters.push("lore_fts MATCH ?");
-    params.push(toFtsQuery(opts.query!.trim()));
+    params.push(toFtsQuery(opts.query!.trim(), !!opts.prefix));
   } else {
     from = `lore l`;
     select = `l.*, NULL AS score`;
@@ -581,9 +755,21 @@ export function searchLore(
     filters.push(`l.id IN (SELECT lore_id FROM lore_repos WHERE repo = ?)`);
     params.push(opts.repo);
   }
-  if (opts.tag) {
-    filters.push(`l.id IN (SELECT lore_id FROM lore_tags WHERE tag = ?)`);
-    params.push(normaliseTag(opts.tag));
+  if (opts.tag !== undefined) {
+    const tagList = Array.isArray(opts.tag) ? opts.tag : [opts.tag];
+    const normalised = Array.from(
+      new Set(tagList.map((t) => normaliseTag(t as string)).filter(Boolean)),
+    );
+    if (normalised.length === 1) {
+      filters.push(`l.id IN (SELECT lore_id FROM lore_tags WHERE tag = ?)`);
+      params.push(normalised[0]!);
+    } else if (normalised.length > 1) {
+      const placeholders = normalised.map(() => "?").join(",");
+      filters.push(
+        `l.id IN (SELECT lore_id FROM lore_tags WHERE tag IN (${placeholders}))`,
+      );
+      params.push(...normalised);
+    }
   }
   if (opts.updatedAfter) {
     filters.push("l.updated_at >= ?");
@@ -603,25 +789,84 @@ export function searchLore(
   const rows = db.prepare(sql).all(...params) as Array<
     LoreRow & { score: number | null }
   >;
-  return rows.map((row) => {
+  const summaries = rows.map((row) => {
     const repos = reposOf(db, row.id);
     const tags = tagsOf(db, row.id);
     return rowToSummary(row, repos, tags, row.score ?? undefined);
   });
+  return annotatePossibleConflicts(summaries);
+}
+
+/**
+ * Pairwise overlap detection within a single search response.
+ *
+ * Two records are surfaced as possible-conflicts when ALL of:
+ *   - both are `active` (drafts / deprecated / superseded are not
+ *     authoritative — flagging them muddies the signal),
+ *   - they share at least one repo,
+ *   - they share at least one tag.
+ *
+ * This is a HEURISTIC, not contradiction detection: two records in the
+ * same scope can be complementary just as easily as they can disagree.
+ * The flag is a "read both" prompt, not authority. The id sets are
+ * populated on each side; ordering is preserved so the agent / CLI can
+ * render them deterministically. We don't mutate the input summaries —
+ * `LoreSummary` is readonly — we return new objects with
+ * `possibleConflicts` populated when non-empty.
+ */
+function annotatePossibleConflicts(summaries: LoreSummary[]): LoreSummary[] {
+  if (summaries.length < 2) return summaries;
+  const overlaps = new Map<string, string[]>();
+  for (let i = 0; i < summaries.length; i++) {
+    const a = summaries[i]!;
+    if (a.status !== "active") continue;
+    for (let j = i + 1; j < summaries.length; j++) {
+      const b = summaries[j]!;
+      if (b.status !== "active") continue;
+      if (!hasIntersection(a.repos, b.repos)) continue;
+      if (!hasIntersection(a.tags, b.tags)) continue;
+      if (!overlaps.has(a.id)) overlaps.set(a.id, []);
+      if (!overlaps.has(b.id)) overlaps.set(b.id, []);
+      overlaps.get(a.id)!.push(b.id);
+      overlaps.get(b.id)!.push(a.id);
+    }
+  }
+  if (overlaps.size === 0) return summaries;
+  return summaries.map((s) => {
+    const c = overlaps.get(s.id);
+    return c && c.length > 0 ? { ...s, possibleConflicts: c } : s;
+  });
+}
+
+function hasIntersection(
+  a: ReadonlyArray<string>,
+  b: ReadonlyArray<string>,
+): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  const set = new Set(a);
+  for (const x of b) if (set.has(x)) return true;
+  return false;
 }
 
 /**
  * Translate a free-text query into an FTS5 MATCH expression.
  * Split on whitespace, drop empties, quote each term — stops users
  * accidentally tripping FTS operators (NEAR, OR, AND, ", :, etc.).
+ *
+ * When `prefix` is true, every quoted token of length ≥ 3 is suffixed
+ * with `*` so it matches as a prefix ("timez" → "timezone"). Tokens
+ * shorter than 3 chars stay exact-match because a 1–2 char prefix is
+ * usually meaningless and slow.
  */
-function toFtsQuery(input: string): string {
+function toFtsQuery(input: string, prefix: boolean): string {
   const parts = input
     .split(/\s+/)
     .map((p) => p.replace(/"/g, ""))
     .filter(Boolean);
   if (parts.length === 0) return '""';
-  return parts.map((p) => `"${p}"`).join(" ");
+  return parts
+    .map((p) => (prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`))
+    .join(" ");
 }
 
 export interface PossibleDuplicate extends LoreSummary {
