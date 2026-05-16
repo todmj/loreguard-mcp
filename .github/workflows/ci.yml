@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Defence in depth — this workflow never needs to write to the repo, push
+# tags, create releases, or publish to npm. Explicitly drop the default
+# token to read-only so even an accidentally-added publish step would fail.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: typecheck • test • build (Node ${{ matrix.node }} on ${{ matrix.os }})
