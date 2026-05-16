@@ -45,6 +45,27 @@ function assertIsoDate(value: string | undefined, field: string): void {
 }
 
 /**
+ * `source` must be a real http(s) URL. The README is explicit about
+ * this — sources are PR / ADR / incident permalinks, not free-text
+ * shorthand. Keeps the trust signal honest (a real URL can be checked).
+ * An empty string is treated as "clear the source" (used by updateLore).
+ */
+function assertHttpUrl(value: string | undefined, field: string): void {
+  if (value === undefined || value === "") return;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${field}: '${value}' is not a valid URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `${field}: '${value}' must be an http(s) URL (got ${parsed.protocol})`,
+    );
+  }
+}
+
+/**
  * R20 — when verifyLore runs on a record whose review_after has lapsed,
  * push the date this many days forward so the record is no longer
  * flagged stale. Callers can pass a custom date to override.
@@ -155,6 +176,7 @@ function insertLore(
   ).sort();
   const confidence = clampConfidence(input.confidence, !!input.source, status);
   assertIsoDate(input.reviewAfter, "reviewAfter");
+  assertHttpUrl(input.source, "source");
   const tx = db.transaction(() => {
     const info = db
       .prepare(
@@ -364,6 +386,7 @@ export function updateLore(
     input.reviewAfter === null ? undefined : input.reviewAfter,
     "reviewAfter",
   );
+  assertHttpUrl(input.source, "source");
 
   // Resolve final values, falling back to current row when not provided.
   const title = input.title ?? current.title;
@@ -371,7 +394,15 @@ export function updateLore(
   const body = input.body ?? current.body;
   const author = input.author !== undefined ? input.author : current.author;
   const team = input.team !== undefined ? input.team : current.team;
-  const source = input.source !== undefined ? input.source : current.source;
+  // Empty string is the explicit "clear the source" signal (since the
+  // `source: undefined` case means "no change"). NULL in storage; the
+  // confidence re-clamp will catch any high→medium fallout.
+  const source =
+    input.source === ""
+      ? null
+      : input.source !== undefined
+        ? input.source
+        : current.source;
   const reviewAfter =
     input.reviewAfter === null
       ? null
@@ -527,9 +558,9 @@ export function searchLore(
     filters.push(`l.id IN (SELECT lore_id FROM lore_tags WHERE tag = ?)`);
     params.push(normaliseTag(opts.tag));
   }
-  if (opts.since) {
+  if (opts.updatedAfter) {
     filters.push("l.updated_at >= ?");
-    params.push(opts.since);
+    params.push(opts.updatedAfter);
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const orderBy = hasFts

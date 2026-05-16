@@ -36,10 +36,11 @@ What's NOT in scope:
 | Audit log | `~/.lore/audit.jsonl`, mode `0600`, append-only |
 | Network egress | None. No `fetch`, `axios`, or analytics SDKs in the dep tree. |
 | Search excludes by default | `draft`, `deprecated`, `superseded`, `restricted` |
+| `includeRestricted` via MCP | Ignored unless `LORE_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
 
 ## Audit log
 
-Every tool call lands in `~/.lore/audit.jsonl`:
+Every MCP tool call lands in `~/.lore/audit.jsonl`:
 
 ```json
 {
@@ -53,10 +54,31 @@ Every tool call lands in `~/.lore/audit.jsonl`:
 
 Inspect with `lore audit --n 50`.
 
-We never log the full result body — that's the data we're trying to
-protect. Only enough to answer "what did Claude see at 14:32?".
+**What the audit log contains:**
 
-Disable for tests with `LORE_AUDIT_OFF=1`. Not recommended in production.
+- Tool name, timestamp, request arguments (e.g. `query`, `repo`, `tag`),
+  result count, and result IDs.
+- For `suggest_lore`: title, source URL, repos/tags, confidence, plus
+  `summaryChars` / `bodyChars` (lengths only). The result ID.
+
+**What the audit log never contains:**
+
+- Body text of a suggested or updated record.
+- Full content of returned search results — only IDs.
+
+Be aware: search queries and titles themselves can carry sensitive
+intent (e.g. `query: "incident response key contacts"`). That's by
+design — the audit log needs enough context to answer "what did Claude
+see at 14:32?" — but it does mean the log file is itself sensitive.
+Mode `0600` and the home-directory location are the access control.
+
+CLI mutations (`add`, `approve`, `deprecate`, `supersede`, `verify`,
+`update`, `delete`) are NOT recorded in `audit.jsonl`. They go into
+the SQLite `events` table, keyed by lore id, with timestamps and
+event kind. Query with `sqlite3 ~/.lore/lore.db 'SELECT * FROM events'`.
+
+Disable MCP audit for tests with `LORE_AUDIT_OFF=1`. Not recommended
+in production.
 
 ## Hardening for enterprise
 

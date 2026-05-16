@@ -459,6 +459,51 @@ describe("core/lore", () => {
     });
   });
 
+  describe("source URL validation", () => {
+    it("addLore rejects a non-URL source", () => {
+      expect(() =>
+        addLore(db, {
+          title: "t",
+          summary: "s",
+          body: "b",
+          source: "ADR-014",
+        }),
+      ).toThrow(/source/);
+    });
+    it("addLore rejects a non-http URL", () => {
+      expect(() =>
+        addLore(db, {
+          title: "t",
+          summary: "s",
+          body: "b",
+          source: "javascript:alert(1)",
+        }),
+      ).toThrow(/source/);
+    });
+    it("addLore accepts an https URL", () => {
+      const lore = addLore(db, {
+        title: "t",
+        summary: "s",
+        body: "b",
+        source: "https://example.com/adrs/14",
+      });
+      expect(lore.source).toBe("https://example.com/adrs/14");
+    });
+    it("updateLore can clear the source by passing empty string", () => {
+      const a = addLore(db, {
+        title: "t",
+        summary: "s",
+        body: "b",
+        source: "https://example.com/x",
+        confidence: "high",
+      });
+      const updated = updateLore(db, a.id, { source: "" });
+      expect(updated?.source).toBeUndefined();
+      // And confidence drops because no source.
+      expect(updated?.confidence).toBe("medium");
+    });
+  });
+
   describe("reviewAfter date validation", () => {
     it("addLore rejects an invalid ISO date for reviewAfter", () => {
       expect(() =>
