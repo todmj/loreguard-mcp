@@ -59,6 +59,40 @@ npm i -g lore-mcp
 lore init
 ```
 
+## 5-minute walkthrough
+
+`lore demo` seeds five illustrative records (tagged `demo`) so you can
+explore the workflow without authoring content first:
+
+```bash
+lore init
+lore demo               # five demo records, one of them a draft, one stale
+lore list               # see what was added
+lore search timezone    # the dates/timezone gotcha; flagged stale
+lore search Argon2id    # high-confidence sourced decision
+lore review             # interactive triage of the draft
+lore show <id>          # full body of any record
+```
+
+When you're done:
+
+```bash
+lore demo --clean       # removes only records tagged 'demo'
+```
+
+`lore demo` refuses to seed into a non-empty DB unless you pass
+`--force`; `--clean` only deletes demo-tagged rows, so it won't touch
+real content.
+
+> **What not to store**
+>
+> Don't put secrets, credentials, personal data, patient data, or
+> anything your AI client should not receive in a prompt into lore.
+> `lore` is a retrieval index, not a vault — retrieved records are sent
+> to your configured LLM provider as part of the next prompt. The
+> `restricted` flag hides records from default search; it does not
+> prevent disclosure once a record is fetched.
+
 ## Add a note (human)
 
 Interactively:
