@@ -22,8 +22,8 @@ it, and get a compact summary back. Full body only on demand.
 > (`better-sqlite3`) that's built at install time.
 
 ```bash
-git clone https://github.com/todmj/lore-mcp.git
-cd lore-mcp
+git clone https://github.com/todmj/loreguard-mcp.git
+cd loreguard-mcp
 pnpm install                  # builds the better-sqlite3 native binding too
 pnpm build
 npm link                      # REQUIRED: puts `loreguard` + `loreguard-mcp` on your $PATH
@@ -47,13 +47,13 @@ loreguard doctor
 To uninstall the link later:
 
 ```bash
-cd lore-mcp && npm unlink -g
+cd loreguard-mcp && npm unlink -g
 ```
 
 Don't want `npm link`? Skip it and reference the absolute path everywhere
 (e.g. in `claude mcp add` — see [Hook it up to Claude Code](#hook-it-up-to-claude-code)
 below). You won't be able to type `loreguard` directly though; every CLI
-invocation becomes `node /absolute/path/to/lore-mcp/dist/bin/loreguard.js …`.
+invocation becomes `node /absolute/path/to/loreguard-mcp/dist/bin/loreguard.js …`.
 
 Once the package is published on npm this will simplify to:
 
@@ -282,7 +282,7 @@ claude mcp add loreguard loreguard-mcp
 If you didn't, point Claude at the local build directly:
 
 ```bash
-claude mcp add loreguard node /absolute/path/to/lore-mcp/dist/bin/loreguard-mcp.js
+claude mcp add loreguard node /absolute/path/to/loreguard-mcp/dist/bin/loreguard-mcp.js
 ```
 
 (Substitute your actual clone path. `claude mcp list` will show the
