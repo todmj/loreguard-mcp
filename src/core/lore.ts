@@ -801,6 +801,47 @@ export function listDrafts(db: Database): LoreSummary[] {
   );
 }
 
+/**
+ * Bulk export — full Lore records (body included). Caller-controlled
+ * lifecycle filter, mirroring `searchLore` semantics: defaults to active +
+ * non-restricted; opt in to each other class explicitly. Stable ordering
+ * (updated_at desc, id asc tiebreak) so two exports of the same DB diff
+ * cleanly.
+ *
+ * NOT exposed via MCP — this is a CLI-only path. The agent gets brief
+ * summaries via search and the body of one record at a time via get;
+ * bulk extraction is a human operation.
+ */
+export function exportLore(
+  db: Database,
+  opts: {
+    includeDrafts?: boolean;
+    includeDeprecated?: boolean;
+    includeSuperseded?: boolean;
+    includeRestricted?: boolean;
+  } = {},
+): Lore[] {
+  const allowedStatuses: LoreStatus[] = ["active"];
+  if (opts.includeDrafts) allowedStatuses.push("draft");
+  if (opts.includeDeprecated) allowedStatuses.push("deprecated");
+  if (opts.includeSuperseded) allowedStatuses.push("superseded");
+
+  const filters: string[] = [
+    `status IN (${allowedStatuses.map(() => "?").join(",")})`,
+  ];
+  const params: Array<string | number> = [...allowedStatuses];
+  if (!opts.includeRestricted) {
+    filters.push("restricted = 0");
+  }
+  const sql = `
+    SELECT * FROM lore
+    WHERE ${filters.join(" AND ")}
+    ORDER BY updated_at DESC, id ASC
+  `;
+  const rows = db.prepare(sql).all(...params) as LoreRow[];
+  return rows.map((row) => rowToLore(row, reposOf(db, row.id), tagsOf(db, row.id)));
+}
+
 export function listTags(db: Database): string[] {
   return (
     db

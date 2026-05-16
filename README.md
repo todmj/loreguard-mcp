@@ -263,6 +263,22 @@ local index) is planned for v0.2 but not required for local use.
 Override the path with `LORE_DB=/some/other.db` for tests or alternate
 profiles.
 
+### Inspect / back up your lore
+
+`lore export` writes the DB as a single JSON document so you can read,
+diff, commit, or copy it without touching SQLite directly:
+
+```bash
+lore export                              # stdout, active + non-restricted
+lore export --out lore-backup.json       # file (mode 0600)
+lore export --include-drafts --include-deprecated --include-superseded --include-restricted --out full.json
+```
+
+Envelope: `{ schemaVersion: 1, exportedAt, records: [Lore, ...] }`. Stable
+ordering by `updatedAt desc` with an `id asc` tiebreak — two exports of
+the same DB diff cleanly. Import is not implemented yet; for v0.1 the
+SQLite file remains the source of truth.
+
 ## Security
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-FLOW.md).
