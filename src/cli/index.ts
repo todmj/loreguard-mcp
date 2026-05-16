@@ -58,7 +58,9 @@ COMMANDS
   delete <id>               Hard-delete the record (events row preserved).
   tags                      Print all distinct tags.
   repos                     Print all distinct repos.
-  audit [--n=N]             Print the last N audit log lines (default 20).
+  audit [--n=N] [--raw]     Print the last N audit log lines (default 20)
+                            in a redacted human-readable form. Use --raw
+                            to see the full JSON instead.
   doctor                    Health-check the local install: DB exists,
                             permissions, FTS index, audit log, restricted
                             MCP gate, version. Exits non-zero on hard
@@ -347,29 +349,55 @@ async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
   const author = getString(args.flags, "author");
   const reposFlag = getStringArray(args.flags, "repo");
   const tagsFlag = getStringArray(args.flags, "tag");
+  const clearSource = getBool(args.flags, "clear-source");
+  const clearRepos = getBool(args.flags, "clear-repos");
+  const clearTags = getBool(args.flags, "clear-tags");
   const restricted = args.flags["restricted"] === true
     ? true
     : args.flags["unrestricted"] === true
       ? false
       : undefined;
 
+  // R5 — refuse contradictory combinations rather than silently picking one.
+  if (clearSource && source !== undefined) {
+    process.stderr.write(
+      "lore: --clear-source conflicts with --source <url>; pick one\n",
+    );
+    return 2;
+  }
+  if (clearRepos && reposFlag.length > 0) {
+    process.stderr.write(
+      "lore: --clear-repos conflicts with --repo; pick one\n",
+    );
+    return 2;
+  }
+  if (clearTags && tagsFlag.length > 0) {
+    process.stderr.write(
+      "lore: --clear-tags conflicts with --tag; pick one\n",
+    );
+    return 2;
+  }
+
   // Build a tight partial-input — only include keys the user actually passed.
   const patch: Record<string, unknown> = {};
   if (title !== undefined) patch["title"] = title;
   if (summary !== undefined) patch["summary"] = summary;
   if (body !== undefined) patch["body"] = body;
-  if (source !== undefined) patch["source"] = source;
+  if (clearSource) patch["source"] = "";
+  else if (source !== undefined) patch["source"] = source;
   if (reviewAfter !== undefined) patch["reviewAfter"] = reviewAfter;
   if (confidence !== undefined) patch["confidence"] = confidence;
   if (team !== undefined) patch["team"] = team;
   if (author !== undefined) patch["author"] = author;
-  if (reposFlag.length > 0) patch["repos"] = reposFlag;
-  if (tagsFlag.length > 0) patch["tags"] = tagsFlag;
+  if (clearRepos) patch["repos"] = [];
+  else if (reposFlag.length > 0) patch["repos"] = reposFlag;
+  if (clearTags) patch["tags"] = [];
+  else if (tagsFlag.length > 0) patch["tags"] = tagsFlag;
   if (restricted !== undefined) patch["restricted"] = restricted;
 
   if (Object.keys(patch).length === 0) {
     process.stderr.write(
-      "lore: update needs at least one field flag (--title, --summary, --body, --source, --review-after, --confidence, --team, --repo, --tag, --restricted/--unrestricted)\n",
+      "lore: update needs at least one field flag (--title, --summary, --body, --source, --clear-source, --review-after, --confidence, --team, --repo, --clear-repos, --tag, --clear-tags, --restricted/--unrestricted)\n",
     );
     return 2;
   }
@@ -444,6 +472,16 @@ async function cmdDoctor(): Promise<number> {
   return exitCode;
 }
 
+/**
+ * Audit display. Default is a redacted human-readable form:
+ *
+ *   2026-05-16T11:32:18Z  search_lore  q="password hashing" repo=payments-svc  → 2 hits
+ *
+ * The on-disk JSONL never contains result bodies (the audit module already
+ * scrubs those before write — see audit.test.ts), but raw JSON exposes
+ * search queries and titles that might carry sensitive intent. `--raw`
+ * opts back into full JSON for power users who explicitly want it.
+ */
 async function cmdAudit(args: ReturnType<typeof parseArgs>): Promise<number> {
   const path =
     process.env["LORE_AUDIT_LOG"] ?? join(homedir(), ".lore", "audit.jsonl");
@@ -452,10 +490,82 @@ async function cmdAudit(args: ReturnType<typeof parseArgs>): Promise<number> {
     return 0;
   }
   const n = Number(getString(args.flags, "n") ?? "20");
-  const lines = readFileSync(path, "utf8").trim().split("\n");
+  const raw = getBool(args.flags, "raw");
+  const lines = readFileSync(path, "utf8").trim().split("\n").filter(Boolean);
   const tail = lines.slice(Math.max(0, lines.length - n));
-  for (const l of tail) process.stdout.write(l + "\n");
+  if (raw) {
+    for (const l of tail) process.stdout.write(l + "\n");
+    return 0;
+  }
+  for (const l of tail) {
+    process.stdout.write(formatAuditLine(l) + "\n");
+  }
   return 0;
+}
+
+/**
+ * Render a single audit JSONL row as a short, redacted one-liner.
+ * Falls back to the raw line if it can't be parsed — never throws.
+ */
+function formatAuditLine(line: string): string {
+  let row: {
+    ts?: string;
+    tool?: string;
+    request?: Record<string, unknown>;
+    resultCount?: number;
+    resultIds?: string[];
+    error?: string;
+  };
+  try {
+    row = JSON.parse(line);
+  } catch {
+    return line;
+  }
+  const ts = (row.ts ?? "").replace(/\.\d+Z$/, "Z");
+  const tool = row.tool ?? "?";
+  const req = row.request ?? {};
+  const reqBits: string[] = [];
+  if (tool === "search_lore") {
+    if (typeof req["query"] === "string") {
+      reqBits.push(`q="${redactQuery(req["query"] as string)}"`);
+    }
+    if (req["repo"]) reqBits.push(`repo=${String(req["repo"])}`);
+    if (req["tag"]) reqBits.push(`tag=${String(req["tag"])}`);
+    if (req["includeRestricted"]) reqBits.push("+restricted");
+    if (req["includeDrafts"]) reqBits.push("+drafts");
+  } else if (tool === "suggest_lore") {
+    if (typeof req["title"] === "string") {
+      reqBits.push(`title="${redactTitle(req["title"] as string)}"`);
+    }
+    if (typeof req["bodyChars"] === "number") {
+      reqBits.push(`bodyChars=${req["bodyChars"]}`);
+    }
+    if (req["source"]) reqBits.push(`source=${String(req["source"])}`);
+    if (req["confidence"]) reqBits.push(`conf=${String(req["confidence"])}`);
+  } else if (tool === "get_lore") {
+    if (req["id"]) reqBits.push(`id=${String(req["id"])}`);
+  } else {
+    // Unknown tool — show keys, not values.
+    for (const k of Object.keys(req)) reqBits.push(k);
+  }
+  const result = row.error
+    ? `→ ERR: ${row.error}`
+    : row.resultCount !== undefined
+      ? `→ ${row.resultCount} hit${row.resultCount === 1 ? "" : "s"}`
+      : "";
+  return `${ts}  ${tool}  ${reqBits.join(" ")}  ${result}`.trim();
+}
+
+/** Truncate long search queries to keep the audit display tidy + privacy-respecting. */
+function redactQuery(q: string): string {
+  if (q.length <= 60) return q;
+  return q.slice(0, 57) + "…";
+}
+
+/** Same for titles. */
+function redactTitle(t: string): string {
+  if (t.length <= 50) return t;
+  return t.slice(0, 47) + "…";
 }
 
 export async function main(argv: ReadonlyArray<string>): Promise<number> {
