@@ -155,20 +155,24 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
     // For drafts (lore suggest), surface near-duplicates so the human
     // reviewing the queue isn't surprised later. Quiet for `lore add` —
     // humans entering their own records have already decided.
+    //
+    // CLI runs locally as the trust principal (the human at the terminal),
+    // so restricted records ARE included in the hint list here. The
+    // MCP path is different — that's env-gated.
     if (asDraft) {
-      const dupes = findPossibleDuplicates(db, {
-        id: lore.id,
-        title,
-        repos,
-        tags,
-      });
-      if (dupes.length > 0) {
+      const { duplicates } = findPossibleDuplicates(
+        db,
+        { id: lore.id, title, repos, tags },
+        { allowRestricted: true },
+      );
+      if (duplicates.length > 0) {
         process.stdout.write(
           `Possible duplicates (review with \`lore show <id>\`):\n`,
         );
-        for (const d of dupes) {
+        for (const d of duplicates) {
+          const restrictedTag = d.restricted ? " [restricted]" : "";
           process.stdout.write(
-            `  ${d.id}  [${d.status}]  ${d.title}\n`,
+            `  ${d.id}  [${d.status}]${restrictedTag}  ${d.title}\n    reason: ${d.reason}\n`,
           );
         }
       }

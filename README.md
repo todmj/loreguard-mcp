@@ -114,8 +114,14 @@ cannot promote their own suggestions.
 `suggest_lore` also returns up to 3 `possibleDuplicates` (active or draft
 records with a similar title, optionally weighted by shared repo/tag) so
 the agent can flag near-dupes inline and reviewers spot them at triage.
-Hints only — suggestions never get blocked. `lore suggest` from the CLI
-prints the same hints.
+Each entry includes a `reason` summarising the matched signals
+(`similar-title`, `shared-repo:<name>`, `shared-tag:<name>`). Hints only —
+suggestions never get blocked.
+
+Restricted records are surfaced as a count (`restrictedDuplicateCount`)
+rather than titles, unless `LORE_ALLOW_RESTRICTED_MCP=1`. Same env gate
+as `search_lore` and `get_lore`. `lore suggest` from the CLI is local and
+shows restricted titles directly with a `[restricted]` marker.
 
 ## Search
 
@@ -171,7 +177,7 @@ Claude sees three tools:
 
 - `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries
 - `get_lore({ id })` — full body of one record
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates }` (up to 3 similar records, hints only)
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
 
 The MCP surface is intentionally narrow. Agents can read and suggest;
 **approval, deprecation, and supersession are CLI-only**.

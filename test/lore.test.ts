@@ -651,26 +651,52 @@ describe("core/lore", () => {
         repos: ["payments-svc"],
         tags: ["dates"],
       });
-      const dupes = findPossibleDuplicates(db, {
+      const { duplicates, restrictedDuplicateCount } = findPossibleDuplicates(db, {
         id: fresh.id,
         title: "API dates need timezone offset",
         repos: ["payments-svc"],
         tags: ["dates"],
       });
-      expect(dupes.map((d) => d.id)).toContain(existing.id);
+      expect(duplicates.map((d) => d.id)).toContain(existing.id);
+      expect(restrictedDuplicateCount).toBe(0);
     });
 
-    it("returns [] when title has fewer than two meaningful tokens", () => {
+    it("populates a `reason` field summarising matched signals", () => {
+      const existing = addLore(db, {
+        title: "Vermilion zeppelin altitude policy",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+        tags: ["safety"],
+      });
+      const fresh = suggestLore(db, {
+        title: "Vermilion zeppelin altitude policy new",
+        summary: "s",
+        body: "b",
+        repos: ["aviation-svc"],
+        tags: ["safety"],
+      });
+      const { duplicates } = findPossibleDuplicates(db, {
+        id: fresh.id,
+        title: "Vermilion zeppelin altitude policy new",
+        repos: ["aviation-svc"],
+        tags: ["safety"],
+      });
+      const hit = duplicates.find((d) => d.id === existing.id);
+      expect(hit?.reason).toContain("similar-title");
+      expect(hit?.reason).toContain("shared-repo:aviation-svc");
+      expect(hit?.reason).toContain("shared-tag:safety");
+    });
+
+    it("returns the empty result when title has fewer than two meaningful tokens", () => {
       addLore(db, {
         title: "Things",
         summary: "s",
         body: "b",
       });
-      const dupes = findPossibleDuplicates(db, {
-        id: "xxxxxxxx",
-        title: "x",
-      });
-      expect(dupes).toEqual([]);
+      expect(
+        findPossibleDuplicates(db, { id: "xxxxxxxx", title: "x" }),
+      ).toEqual({ duplicates: [], restrictedDuplicateCount: 0 });
     });
 
     it("excludes the given id (no self-match for the just-inserted record)", () => {
@@ -679,16 +705,16 @@ describe("core/lore", () => {
         summary: "s",
         body: "b",
       });
-      const dupes = findPossibleDuplicates(db, {
+      const { duplicates } = findPossibleDuplicates(db, {
         id: lore.id,
         title: "Argon2id password hashing default",
       });
-      expect(dupes.map((d) => d.id)).not.toContain(lore.id);
+      expect(duplicates.map((d) => d.id)).not.toContain(lore.id);
     });
 
-    it("excludes restricted records — dupe hints shouldn't leak restricted titles", () => {
-      const restricted = addLore(db, {
-        title: "Restricted runbook: rotate platinum keys",
+    it("by default hides restricted titles but reports them in restrictedDuplicateCount", () => {
+      addLore(db, {
+        title: "Restricted runbook rotate platinum keys",
         summary: "s",
         body: "b",
         restricted: true,
@@ -698,11 +724,33 @@ describe("core/lore", () => {
         summary: "s",
         body: "b",
       });
-      const dupes = findPossibleDuplicates(db, {
-        id: draft.id,
-        title: "Rotate platinum keys policy",
+      const { duplicates, restrictedDuplicateCount } = findPossibleDuplicates(
+        db,
+        { id: draft.id, title: "Rotate platinum keys policy" },
+      );
+      expect(duplicates.every((d) => d.restricted === false)).toBe(true);
+      expect(restrictedDuplicateCount).toBe(1);
+    });
+
+    it("surfaces restricted titles when allowRestricted: true", () => {
+      const restricted = addLore(db, {
+        title: "Restricted runbook rotate gold keys",
+        summary: "s",
+        body: "b",
+        restricted: true,
       });
-      expect(dupes.map((d) => d.id)).not.toContain(restricted.id);
+      const draft = suggestLore(db, {
+        title: "Rotate gold keys policy",
+        summary: "s",
+        body: "b",
+      });
+      const { duplicates, restrictedDuplicateCount } = findPossibleDuplicates(
+        db,
+        { id: draft.id, title: "Rotate gold keys policy" },
+        { allowRestricted: true },
+      );
+      expect(duplicates.map((d) => d.id)).toContain(restricted.id);
+      expect(restrictedDuplicateCount).toBe(1);
     });
 
     it("excludes deprecated and superseded records", () => {
@@ -728,11 +776,11 @@ describe("core/lore", () => {
         summary: "s",
         body: "b",
       });
-      const dupes = findPossibleDuplicates(db, {
+      const { duplicates } = findPossibleDuplicates(db, {
         id: draft.id,
         title: "New bcrypt password idea",
       });
-      const ids = dupes.map((d) => d.id);
+      const ids = duplicates.map((d) => d.id);
       expect(ids).not.toContain(a.id);
       expect(ids).not.toContain(b.id);
       // c (the active replacement) is fair game.
@@ -744,43 +792,44 @@ describe("core/lore", () => {
       // repo, the other doesn't. Both should be candidates; the
       // repo-overlap one should come first.
       const sharesRepo = addLore(db, {
-        title: "Vermilion zeppelin altitude policy",
+        title: "Cerulean kite altitude policy",
         summary: "s",
         body: "b",
         repos: ["aviation-svc"],
       });
       addLore(db, {
-        title: "Vermilion zeppelin altitude policy archive",
+        title: "Cerulean kite altitude policy archive",
         summary: "s",
         body: "b",
         repos: ["other-svc"],
       });
       const draft = suggestLore(db, {
-        title: "Vermilion zeppelin altitude policy new",
+        title: "Cerulean kite altitude policy new",
         summary: "s",
         body: "b",
         repos: ["aviation-svc"],
       });
-      const dupes = findPossibleDuplicates(db, {
+      const { duplicates } = findPossibleDuplicates(db, {
         id: draft.id,
-        title: "Vermilion zeppelin altitude policy new",
+        title: "Cerulean kite altitude policy new",
         repos: ["aviation-svc"],
       });
-      expect(dupes.length).toBeGreaterThanOrEqual(1);
-      expect(dupes[0]!.id).toBe(sharesRepo.id);
+      expect(duplicates.length).toBeGreaterThanOrEqual(1);
+      expect(duplicates[0]!.id).toBe(sharesRepo.id);
     });
 
-    it("returns [] when no candidates match", () => {
+    it("returns the empty result when no candidates match", () => {
       addLore(db, {
         title: "Completely unrelated subject matter here",
         summary: "s",
         body: "b",
       });
-      const dupes = findPossibleDuplicates(db, {
-        id: "xxxxxxxx",
-        title: "Vermilion zeppelin policy",
-      });
-      expect(dupes).toEqual([]);
+      expect(
+        findPossibleDuplicates(db, {
+          id: "xxxxxxxx",
+          title: "Magenta dirigible policy",
+        }),
+      ).toEqual({ duplicates: [], restrictedDuplicateCount: 0 });
     });
   });
 
