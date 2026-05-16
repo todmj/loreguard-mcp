@@ -86,6 +86,42 @@ lore demo --clean       # removes only records tagged 'demo'
 `--force`; `--clean` only deletes demo-tagged rows, so it won't touch
 real content.
 
+## Onboarding a repo: `lore induct`
+
+`lore demo` shows the *workflow*; `lore induct` helps you generate
+*real* starting lore for a specific repo. It's a short interactive
+interview — 10 high-signal questions about the things agents tend to
+get wrong on a codebase they've never seen:
+
+- dangerous areas to edit without context;
+- old patterns that shouldn't be copied;
+- architectural decisions that aren't visible from code;
+- migrations / transitions in flight;
+- invariants that must always hold;
+- which tests are authoritative;
+- external systems with surprising behaviour;
+- non-obvious conventions (naming, timezones, auth, permissions);
+- failure modes from past incidents;
+- what a new contributor should ask first.
+
+```bash
+cd ~/code/payments-svc
+lore induct                  # autodetects repo name from git remote
+lore induct --repo my-svc    # or set it explicitly (repeatable)
+```
+
+Every non-blank answer becomes a **DRAFT** record tagged `induction`
+with a 90-day `reviewAfter`. Sourced answers go in as `confidence:
+medium`; unsourced as `low`. Promote what's worth keeping via
+`lore review` — same triage queue agents' suggestions flow through.
+Skip a question with a blank line; quit early by typing `q` (drafts
+already saved are preserved).
+
+This is the opposite of "scan repo and invent memory" — it's a
+human-driven cold-start. Aim answers at non-obvious, high-consequence
+knowledge (see [What deserves lore?](#what-deserves-lore) above);
+"we use TypeScript" goes in `CLAUDE.md`, not here.
+
 > **What not to store**
 >
 > Don't put secrets, credentials, personal data, patient data, or
