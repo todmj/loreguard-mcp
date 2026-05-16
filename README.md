@@ -1,7 +1,9 @@
 # lore
 
-> Just-in-time local memory for AI coding agents.
-> A local SQLite-backed MCP server + CLI for durable, searchable context.
+> **Reviewed project memory for coding agents.**
+> Agents can suggest reusable project knowledge; humans decide what
+> becomes trusted lore.
+> Local SQLite-backed MCP server + CLI.
 
 Every AI coding session starts cold. Agents re-read the same files, rediscover
 the same conventions, and burn tokens on context you already taught them last
@@ -118,6 +120,37 @@ Argon2id with m=64MB, t=3, p=4 is the new baseline." \
 ```
 
 Records added by humans default to `status: active` — visible to search.
+
+## What deserves lore?
+
+Lore is most useful when it's small and high-signal. The whole point of
+the review-gated draft flow is to keep it that way.
+
+**Good lore:**
+
+- project-specific conventions (style choices baked into one codebase)
+- architectural decisions (why this pattern, not that one)
+- deprecated patterns (what to use instead, and the source PR)
+- migration rules (what changed, and the contract during the cutover)
+- recurring gotchas (the bug we keep re-introducing)
+- incident lessons (what we learned, link to the write-up)
+- security-sensitive coding rules — **excluding secrets**
+- cross-repo knowledge that agents repeatedly rediscover
+
+**Bad lore:**
+
+- secrets, credentials, tokens, keys (use a secrets manager)
+- personal data, patient data, anything regulated
+- transient task state ("the script we ran last Tuesday")
+- generic programming advice already known to the model
+- unverified agent guesses or session-specific speculation
+- facts obvious from a nearby `README.md` or the code itself
+- always-on preferences — those belong in `CLAUDE.md`
+- anything your AI client should not receive in a prompt
+
+When in doubt, ask: *would a future teammate, six months from now,
+thank me for finding this?* If yes, it's lore. If it's a note to
+yourself for this afternoon, it isn't.
 
 ## Let agents write things down
 
