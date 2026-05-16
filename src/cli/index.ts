@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { execSync } from "node:child_process";
 
 import { openDb } from "../db/index.js";
 import type { LoreConfidence } from "../db/types.js";
@@ -27,6 +28,12 @@ import { getBool, getString, getStringArray, parseArgs } from "./args.js";
 import { cleanDemo, countLore, seedDemo } from "./demo.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
+import {
+  INDUCTION_QUESTIONS,
+  type InductionAnswer,
+  runInduct,
+  shortRepoNameFromRemote,
+} from "./induct.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
 
@@ -90,6 +97,13 @@ COMMANDS
                             authoring content first. Refuses to seed into
                             a non-empty DB unless --force. Use --clean to
                             remove the demo records later.
+  induct [--repo <name>]    Repo-onboarding interview: walks you through
+                            10 high-signal questions and turns each
+                            non-blank answer into a DRAFT lore record
+                            (tagged 'induction', 90-day review window).
+                            Drafts only — promote via \`lore review\`. Use
+                            --repo to override the auto-detected name
+                            (repeatable).
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -697,6 +711,110 @@ async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
+/**
+ * Best-effort: read `git config --get remote.origin.url` and parse it
+ * into a short repo name. Returns null on any failure (not in a git
+ * repo, no remote, weird URL shape). The caller falls back to asking.
+ */
+function detectRepoName(): string | null {
+  try {
+    const out = execSync("git config --get remote.origin.url", {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return shortRepoNameFromRemote(out);
+  } catch {
+    return null;
+  }
+}
+
+async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
+  // Repo scope. --repo can be passed multiple times. If absent, try to
+  // autodetect; if that fails, prompt once (skippable).
+  const repoFlags = getStringArray(args.flags, "repo");
+  let repos: string[];
+  if (repoFlags.length > 0) {
+    repos = repoFlags;
+  } else {
+    const detected = detectRepoName();
+    if (detected) {
+      const confirm = (
+        await prompt(
+          `Detected repo '${detected}' — tag drafts with this? [Y/n] `,
+        )
+      )
+        .trim()
+        .toLowerCase();
+      repos = confirm === "n" || confirm === "no" ? [] : [detected];
+    } else {
+      const typed = (
+        await prompt(
+          "No git remote detected. Repo name for these drafts (blank to skip): ",
+        )
+      ).trim();
+      repos = typed ? [typed] : [];
+    }
+  }
+
+  process.stdout.write(
+    `\nlore induct — ${INDUCTION_QUESTIONS.length} questions. ` +
+      `Answers become DRAFTS (review with \`lore review\` afterwards).\n` +
+      `Press blank-line to skip a question, type 'q' on the answer line to quit early.\n` +
+      (repos.length > 0 ? `Repos: ${repos.join(", ")}\n` : "") +
+      `\n`,
+  );
+
+  const answers: InductionAnswer[] = [];
+  let quitEarly = false;
+  for (let i = 0; i < INDUCTION_QUESTIONS.length; i++) {
+    const q = INDUCTION_QUESTIONS[i]!;
+    process.stdout.write(
+      `── ${i + 1} of ${INDUCTION_QUESTIONS.length} ── ${q.topic} ──\n${q.prompt}\n`,
+    );
+    const ans = await promptMulti("Answer:");
+    const trimmed = ans.trim();
+    if (trimmed.toLowerCase() === "q") {
+      quitEarly = true;
+      break;
+    }
+    if (trimmed.length === 0) {
+      process.stdout.write("(skipped)\n\n");
+      continue;
+    }
+    const source = (
+      await prompt("Source URL (PR/ADR/incident, blank to skip): ")
+    ).trim();
+    answers.push({
+      questionKey: q.key,
+      answer: trimmed,
+      source: source || undefined,
+    });
+    process.stdout.write("\n");
+  }
+
+  const db = openDb();
+  try {
+    const { created } = runInduct(db, { answers, repos });
+    process.stdout.write(
+      `\nlore induct: created ${created.length} draft(s)` +
+        (quitEarly ? " (quit early — drafts already saved are preserved)" : "") +
+        `.\n`,
+    );
+    for (const c of created) {
+      process.stdout.write(`  ${c.id}  ${c.title}\n`);
+    }
+    if (created.length > 0) {
+      process.stdout.write(
+        `\nReview them with: lore review\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdDoctor(): Promise<number> {
   const { exitCode, checks } = runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
@@ -856,6 +974,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdExport(parsed);
       case "demo":
         return await cmdDemo(parsed);
+      case "induct":
+        return await cmdInduct(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":
