@@ -111,6 +111,12 @@ only humans (via the CLI) can approve, reject, deprecate, or supersede
 records.** The MCP server deliberately exposes no approval tool — agents
 cannot promote their own suggestions.
 
+`suggest_lore` also returns up to 3 `possibleDuplicates` (active or draft
+records with a similar title, optionally weighted by shared repo/tag) so
+the agent can flag near-dupes inline and reviewers spot them at triage.
+Hints only — suggestions never get blocked. `lore suggest` from the CLI
+prints the same hints.
+
 ## Search
 
 ```bash
@@ -165,7 +171,7 @@ Claude sees three tools:
 
 - `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries
 - `get_lore({ id })` — full body of one record
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates }` (up to 3 similar records, hints only)
 
 The MCP surface is intentionally narrow. Agents can read and suggest;
 **approval, deprecation, and supersession are CLI-only**.
@@ -231,7 +237,7 @@ Every record carries lifecycle + provenance metadata so retrieval is honest:
 | `confidence` | `low` \| `medium` \| `high`. Default `medium`. *Agent-suggested records cannot claim `high`. Records without a `source` cannot be `high` — invariant enforced at write time.* |
 | `reviewAfter` | ISO date; if past, search flags `stale: true`. |
 | `supersededBy` | ID of the record that replaces this one. |
-| `restricted` | Excluded from search unless `includeRestricted: true`. |
+| `restricted` | Excluded from search unless `includeRestricted: true`. Via MCP, both `search_lore` and `get_lore` are env-gated by `LORE_ALLOW_RESTRICTED_MCP`; with the gate off, `get_lore` of a restricted id returns a minimal refusal (no title/body). |
 | `lastVerifiedAt` | Bumped by `lore verify <id>`. |
 
 `restricted` is a **retrieval guard**, not a data-loss-prevention mechanism.
@@ -257,7 +263,7 @@ See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-F
 
 **`lore` protects against:**
 
-- Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; MCP `includeRestricted` env-gated).
+- Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; both MCP `search_lore` and `get_lore` env-gated for restricted records).
 - Stale or unreviewed memory dominating retrieval (`stale: true` flag; lifecycle filtering; agent suggestions land as drafts).
 - Audit-log leakage of body content (sanitised pre-write; `lore audit` renders redacted by default).
 
