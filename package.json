@@ -1,10 +1,11 @@
 {
-  "name": "lore-mcp",
+  "name": "loreguard-mcp",
   "version": "0.1.0",
-  "description": "Just-in-time local memory for AI coding agents. SQLite-backed MCP server and CLI for trusted, searchable, repo-scoped context.",
+  "description": "Reviewed project memory for AI coding agents. SQLite-backed MCP server + CLI: agents can suggest reusable project knowledge; humans decide what becomes trusted lore.",
   "keywords": [
     "mcp",
     "model-context-protocol",
+    "loreguard",
     "claude",
     "claude-code",
     "cursor",
@@ -29,8 +30,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "lore": "dist/bin/lore.js",
-    "lore-mcp": "dist/bin/lore-mcp.js"
+    "loreguard": "dist/bin/loreguard.js",
+    "loreguard-mcp": "dist/bin/loreguard-mcp.js"
   },
   "files": [
     "dist",
@@ -43,8 +44,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev:cli": "tsx src/bin/lore.ts",
-    "dev:mcp": "tsx src/bin/lore-mcp.ts",
+    "dev:cli": "tsx src/bin/loreguard.ts",
+    "dev:mcp": "tsx src/bin/loreguard-mcp.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

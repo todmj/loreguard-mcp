@@ -14,7 +14,7 @@ interface Check {
 
 function auditPath(): string {
   return (
-    process.env["LORE_AUDIT_LOG"] ?? join(homedir(), ".lore", "audit.jsonl")
+    process.env["LOREGUARD_AUDIT_LOG"] ?? join(homedir(), ".loreguard", "audit.jsonl")
   );
 }
 
@@ -46,7 +46,7 @@ export function runDoctor(): { exitCode: number; checks: Check[] } {
     checks.push({
       label: `DB missing: ${dbPath}`,
       level: "warn",
-      fix: "Run `lore init` to create it.",
+      fix: "Run `loreguard init` to create it.",
     });
   }
 
@@ -98,7 +98,7 @@ export function runDoctor(): { exitCode: number; checks: Check[] } {
         checks.push({
           label: "FTS index: MISSING",
           level: "fail",
-          fix: "Run `lore init` to apply migrations.",
+          fix: "Run `loreguard init` to apply migrations.",
         });
       }
       const lore = db
@@ -148,25 +148,25 @@ export function runDoctor(): { exitCode: number; checks: Check[] } {
       checks.push({
         label: `Audit log directory missing: ${dirname(auditPathStr)}`,
         level: "warn",
-        fix: "Run `lore init` to create it.",
+        fix: "Run `loreguard init` to create it.",
       });
     }
   }
 
   // 6. Restricted-MCP gate.
-  const restrictedOn = process.env["LORE_ALLOW_RESTRICTED_MCP"] === "1";
+  const restrictedOn = process.env["LOREGUARD_ALLOW_RESTRICTED_MCP"] === "1";
   checks.push({
     label: `Restricted MCP access: ${restrictedOn ? "ENABLED" : "disabled"}`,
     level: restrictedOn ? "warn" : "ok",
     detail: restrictedOn
-      ? "LORE_ALLOW_RESTRICTED_MCP=1 — agents can request restricted records via search_lore. Make sure this is what you want."
+      ? "LOREGUARD_ALLOW_RESTRICTED_MCP=1 — agents can request restricted records via search_lore. Make sure this is what you want."
       : "Agents cannot fetch restricted records via MCP (the default).",
   });
 
   // 7. Audit-off flag.
-  if (process.env["LORE_AUDIT_OFF"]) {
+  if (process.env["LOREGUARD_AUDIT_OFF"]) {
     checks.push({
-      label: "Audit disabled: LORE_AUDIT_OFF set",
+      label: "Audit disabled: LOREGUARD_AUDIT_OFF set",
       level: "warn",
       detail: "MCP tool calls will not be logged. Not recommended outside tests.",
     });
@@ -180,7 +180,7 @@ export function runDoctor(): { exitCode: number; checks: Check[] } {
 }
 
 export function renderDoctor(checks: Check[]): string {
-  const lines: string[] = ["lore doctor", ""];
+  const lines: string[] = ["loreguard doctor", ""];
   for (const c of checks) {
     const glyph = c.level === "ok" ? "✓" : c.level === "warn" ? "!" : "✗";
     lines.push(`${glyph} ${c.label}`);

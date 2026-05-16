@@ -23,17 +23,17 @@ import { redactRestricted, shouldGateRestrictedGet } from "./redact.js";
  *                    search hit to spend tokens on detail only when needed.
  *   - suggest_lore — agent-authored knowledge lands as a DRAFT
  *                    (status='draft'). Hidden from default search until
- *                    a human runs `lore approve <id>`. Agents cannot
+ *                    a human runs `loreguard approve <id>`. Agents cannot
  *                    promote their own records.
  *
- * Every tool call is recorded to `~/.lore/audit.jsonl` with the request
+ * Every tool call is recorded to `~/.loreguard/audit.jsonl` with the request
  * args, result count, and result ids — never the full result bodies.
  */
 export async function runMcpServer(): Promise<void> {
   const db = openDb();
 
   const server = new McpServer({
-    name: "lore",
+    name: "loreguard",
     version: "0.1.0",
   });
 
@@ -139,10 +139,10 @@ export async function runMcpServer(): Promise<void> {
           includeDeprecated: args.includeDeprecated,
           includeSuperseded: args.includeSuperseded,
           // R4 — env-gated. The agent can ASK for restricted records, but
-          // the server ignores the flag unless LORE_ALLOW_RESTRICTED_MCP=1
+          // the server ignores the flag unless LOREGUARD_ALLOW_RESTRICTED_MCP=1
           // is set at startup. Belt-and-braces beyond the schema default.
           includeRestricted:
-            process.env["LORE_ALLOW_RESTRICTED_MCP"] === "1"
+            process.env["LOREGUARD_ALLOW_RESTRICTED_MCP"] === "1"
               ? args.includeRestricted
               : false,
           limit: args.limit,
@@ -256,7 +256,7 @@ export async function runMcpServer(): Promise<void> {
       description:
         "Record something you've learned during this session so future " +
         "sessions can retrieve it. The record is created as a DRAFT — " +
-        "invisible to default search until a human runs `lore approve " +
+        "invisible to default search until a human runs `loreguard approve " +
         "<id>`. This is the poisoning-prevention guard: agents can " +
         "suggest knowledge, but humans decide what becomes canonical.\n\n" +
         "Use this for genuinely durable observations: team conventions " +
@@ -343,14 +343,14 @@ export async function runMcpServer(): Promise<void> {
         // decides. Surfaced in the response so the calling agent can warn
         // the user inline ("I drafted this but here are 2 similar
         // existing records"), and counted in the audit so a human reading
-        // ~/.lore/audit.jsonl can see how often agents suggest near-dupes.
+        // ~/.loreguard/audit.jsonl can see how often agents suggest near-dupes.
         //
         // Restricted handling: titles of restricted records are not
-        // surfaced unless LORE_ALLOW_RESTRICTED_MCP=1 (same env knob that
+        // surfaced unless LOREGUARD_ALLOW_RESTRICTED_MCP=1 (same env knob that
         // governs search and get). Restricted matches are still counted
         // so the response can say "and N more we're not showing you".
         const allowRestricted =
-          process.env["LORE_ALLOW_RESTRICTED_MCP"] === "1";
+          process.env["LOREGUARD_ALLOW_RESTRICTED_MCP"] === "1";
         const { duplicates: possibleDuplicates, restrictedDuplicateCount } =
           findPossibleDuplicates(
             db,
@@ -379,8 +379,8 @@ export async function runMcpServer(): Promise<void> {
                   id: lore.id,
                   status: lore.status,
                   message:
-                    "Draft created. A human will review with `lore review` and " +
-                    "promote with `lore approve " + lore.id + "`.",
+                    "Draft created. A human will review with `loreguard review` and " +
+                    "promote with `loreguard approve " + lore.id + "`.",
                   possibleDuplicates,
                   restrictedDuplicateCount,
                 },

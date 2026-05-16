@@ -1,7 +1,7 @@
 /**
  * The retrieval rule the user pastes into their agent's instructions
- * file. Kept here (not just in the README) so `lore print-claude-instructions`
- * can emit it deterministically and `lore doctor` can verify it later.
+ * file. Kept here (not just in the README) so `loreguard print-claude-instructions`
+ * can emit it deterministically and `loreguard doctor` can verify it later.
  *
  * Edit only with care — this is the agent-side trust contract.
  */

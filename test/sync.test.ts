@@ -1,5 +1,5 @@
 /**
- * `lore sync` — round-trip Markdown export/import. Guards the
+ * `loreguard sync` — round-trip Markdown export/import. Guards the
  * properties team-sync needs to be trustworthy:
  *
  *   - export → import → export is lossless for the fields we round-trip

@@ -3,7 +3,7 @@ import { runMcpServer } from "../mcp/server.js";
 
 runMcpServer().catch((err) => {
   process.stderr.write(
-    `lore-mcp: fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+    `loreguard-mcp: fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
   );
   process.exit(1);
 });

@@ -7,12 +7,12 @@ import BetterSqlite3, { type Database } from "better-sqlite3";
 import { runMigrations } from "./migrations.js";
 
 /**
- * Default DB location. Override with `LORE_DB` for tests or alternate
+ * Default DB location. Override with `LOREGUARD_DB` for tests or alternate
  * profiles (e.g. team-shared DB on a synced volume).
  */
 export function defaultDbPath(): string {
-  if (process.env["LORE_DB"]) return process.env["LORE_DB"];
-  return join(homedir(), ".lore", "lore.db");
+  if (process.env["LOREGUARD_DB"]) return process.env["LOREGUARD_DB"];
+  return join(homedir(), ".loreguard", "lore.db");
 }
 
 /**

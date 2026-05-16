@@ -7,7 +7,7 @@
  *   positional args separated cleanly from flags
  *
  * Deliberately limited: not trying to be commander, just enough for the
- * handful of `lore` subcommands.
+ * handful of `loreguard` subcommands.
  */
 
 export interface ParsedArgs {
