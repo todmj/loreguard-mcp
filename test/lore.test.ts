@@ -504,6 +504,54 @@ describe("core/lore", () => {
     });
   });
 
+  describe("FTS — technical identifiers (coding-domain tokens)", () => {
+    /**
+     * Coding lore is full of hyphenated service names, version-numbered
+     * algorithms, camelCase API symbols, and weird identifier casing.
+     * The FTS5 tokenizer (porter + unicode61) is generally good but
+     * these specific shapes are worth exercising once.
+     */
+    beforeEach(() => {
+      addLore(db, {
+        title: "payments-svc rejects naive dates",
+        summary: "All inbound API dates must include timezone offsets.",
+        body: "We discovered this in INC-411; payments-svc validation rejects.",
+        repos: ["payments-svc"],
+        tags: ["dates", "api"],
+      });
+      addLore(db, {
+        title: "Argon2id is the password hash default",
+        summary: "Platform sec ruling. m=64MB, t=3, p=4.",
+        body: "Use Argon2id; legacy bcrypt records migrate on next login.",
+        tags: ["security"],
+      });
+    });
+
+    it("finds the hyphenated service name 'payments-svc'", () => {
+      const hits = searchLore(db, { query: "payments-svc" });
+      expect(hits.length).toBeGreaterThan(0);
+      expect(hits[0]!.repos).toContain("payments-svc");
+    });
+
+    it("finds 'Argon2id' regardless of case", () => {
+      const upper = searchLore(db, { query: "Argon2id" });
+      const lower = searchLore(db, { query: "argon2id" });
+      expect(upper.length).toBeGreaterThan(0);
+      expect(lower.length).toBeGreaterThan(0);
+      expect(upper[0]!.id).toBe(lower[0]!.id);
+    });
+
+    it("finds 'bcrypt' even though the title talks about Argon2id", () => {
+      const hits = searchLore(db, { query: "bcrypt" });
+      expect(hits.length).toBeGreaterThan(0);
+    });
+
+    it("repo filter accepts the canonical repo name", () => {
+      const hits = searchLore(db, { query: "dates", repo: "payments-svc" });
+      expect(hits.length).toBe(1);
+    });
+  });
+
   describe("reviewAfter date validation", () => {
     it("addLore rejects an invalid ISO date for reviewAfter", () => {
       expect(() =>
