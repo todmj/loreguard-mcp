@@ -1,5 +1,5 @@
 /**
- * `lore demo` seed + cleanup. The demo records exist primarily for
+ * `loreguard demo` seed + cleanup. The demo records exist primarily for
  * onboarding — these tests just guard the safety properties: idempotent
  * cleanup, refusal to clobber existing data without --force, and the
  * tag-based undo path.

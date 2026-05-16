@@ -1,12 +1,12 @@
 /**
  * Public library surface. Consumers can:
  *
- *   import { openDb, addLore, suggestLore, searchLore, ... } from "lore-mcp";
+ *   import { openDb, addLore, suggestLore, searchLore, ... } from "loreguard-mcp";
  *
  * The MCP server and CLI both live behind separate bin entrypoints
- * (`lore-mcp` and `lore` respectively); this module is for embedding
- * the same logic in another Node process — e.g. an internal service
- * that ingests Slack/Confluence into the same SQLite store.
+ * (`loreguard-mcp` and `loreguard` respectively); this module is for
+ * embedding the same logic in another Node process — e.g. an internal
+ * service that ingests Slack/Confluence into the same SQLite store.
  */
 
 export { openDb, defaultDbPath } from "./db/index.js";

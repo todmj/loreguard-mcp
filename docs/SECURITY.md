@@ -2,22 +2,22 @@
 
 ## Threat model
 
-`lore` is local-first by design. The threat model is:
+`loreguard` is local-first by design. The threat model is:
 
 1. **A compromised agent or sloppy prompt should not leak restricted records.**
    Mitigation: `restricted: true` records are excluded from default
    search; opting in requires an explicit flag, which is audit-logged.
 2. **An agent's "suggest_lore" output should not poison the trusted set.**
    Mitigation: agent suggestions land as `status: draft`; default search
-   ignores drafts; a human must run `lore approve <id>` to promote.
+   ignores drafts; a human must run `loreguard approve <id>` to promote.
 3. **Stale knowledge should not silently masquerade as authoritative.**
    Mitigation: records carry `reviewAfter`; search results carry
    `stale: true` when the date has passed; the CLI prints a warning.
 4. **The server itself should not exfiltrate data.**
-   Mitigation: `lore`'s application code uses stdio transport only and
+   Mitigation: `loreguard`'s application code uses stdio transport only and
    makes no outbound HTTP calls. No telemetry or analytics SDKs.
    The `@modelcontextprotocol/sdk` dependency does include unused
-   HTTP/client modules; `lore` does not import or configure them.
+   HTTP/client modules; `loreguard` does not import or configure them.
    For defence in depth, see the OS-level egress block suggestion in
    the "Hardening for enterprise" section.
 
@@ -25,9 +25,9 @@ What's NOT in scope:
 
 - DLP / access control. `restricted` is a retrieval guard, not a
   cryptographic barrier. Anyone with read access to the DB file can
-  read every record. Don't store secrets in `lore`.
+  read every record. Don't store secrets in `loreguard`.
 - Multi-user authentication. The DB file is a single-user local store.
-  Team sync via `lore sync export/import` is git-mediated: the trust
+  Team sync via `loreguard sync export/import` is git-mediated: the trust
   gate is your PR review, not a server-side auth layer.
 
 ## Defaults
@@ -35,18 +35,18 @@ What's NOT in scope:
 | Setting | Default |
 |---------|---------|
 | Transport | stdio only (no HTTP server) |
-| DB location | `~/.lore/lore.db` |
+| DB location | `~/.loreguard/lore.db` |
 | DB file mode | `0600` (owner read/write) |
 | DB parent dir mode | `0700` |
-| Audit log | `~/.lore/audit.jsonl`, mode `0600`, append-only |
-| Network egress | The `lore` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs. |
+| Audit log | `~/.loreguard/audit.jsonl`, mode `0600`, append-only |
+| Network egress | The `loreguard` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `loreguard` does not import or configure them. No telemetry or analytics SDKs. |
 | Search excludes by default | `draft`, `deprecated`, `superseded`, `restricted` |
-| `includeRestricted` via MCP | Ignored unless `LORE_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
-| `get_lore` of a restricted id via MCP | Same gate as `includeRestricted`. With the gate off, `get_lore` returns a minimal refusal (`{ id, restricted: true, error: "restricted", hint: "..." }`) — no title, no summary, no body, no source — and audits the blocked attempt with `blocked: "restricted"`. With the gate on, returns the full record. CLI `lore show <id>` is unaffected. |
+| `includeRestricted` via MCP | Ignored unless `LOREGUARD_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
+| `get_lore` of a restricted id via MCP | Same gate as `includeRestricted`. With the gate off, `get_lore` returns a minimal refusal (`{ id, restricted: true, error: "restricted", hint: "..." }`) — no title, no summary, no body, no source — and audits the blocked attempt with `blocked: "restricted"`. With the gate on, returns the full record. CLI `loreguard show <id>` is unaffected. |
 
 ## Audit log
 
-Every MCP tool call lands in `~/.lore/audit.jsonl`:
+Every MCP tool call lands in `~/.loreguard/audit.jsonl`:
 
 ```json
 {
@@ -58,7 +58,7 @@ Every MCP tool call lands in `~/.lore/audit.jsonl`:
 }
 ```
 
-A blocked `get_lore` for a restricted id (with `LORE_ALLOW_RESTRICTED_MCP`
+A blocked `get_lore` for a restricted id (with `LOREGUARD_ALLOW_RESTRICTED_MCP`
 unset) looks like:
 
 ```json
@@ -72,7 +72,7 @@ unset) looks like:
 }
 ```
 
-Inspect with `lore audit --n 50`.
+Inspect with `loreguard audit --n 50`.
 
 **What the audit log contains:**
 
@@ -95,9 +95,9 @@ Mode `0600` and the home-directory location are the access control.
 CLI mutations (`add`, `approve`, `deprecate`, `supersede`, `verify`,
 `update`, `delete`) are NOT recorded in `audit.jsonl`. They go into
 the SQLite `events` table, keyed by lore id, with timestamps and
-event kind. Query with `sqlite3 ~/.lore/lore.db 'SELECT * FROM events'`.
+event kind. Query with `sqlite3 ~/.loreguard/lore.db 'SELECT * FROM events'`.
 
-Disable MCP audit for tests with `LORE_AUDIT_OFF=1`. Not recommended
+Disable MCP audit for tests with `LOREGUARD_AUDIT_OFF=1`. Not recommended
 in production.
 
 ## Hardening for enterprise
@@ -107,7 +107,7 @@ in production.
   classification forbids any provider retention.
 - **Self-hosted model**: data never leaves your network. The MCP server
   doesn't care which LLM client calls it.
-- **OS-level egress block** on the `lore-mcp` binary (Little Snitch /
+- **OS-level egress block** on the `loreguard-mcp` binary (Little Snitch /
   nftables) — belt and braces. The server has no outbound code but a
   firewall rule proves it.
 - **Pin dependencies**: `pnpm install --frozen-lockfile` in CI. We ship
@@ -119,7 +119,7 @@ in production.
 
 ## What about secrets in lore?
 
-Don't put them there. `lore` is for *conventions and decisions*, not
+Don't put them there. `loreguard` is for *conventions and decisions*, not
 credentials or tokens. If someone records "the prod API key is X" they
 have made a mistake the tool can't fix.
 
