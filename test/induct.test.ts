@@ -20,6 +20,8 @@ import {
   INDUCT_TAG,
   INDUCTION_QUESTIONS,
   runInduct,
+  SHORT_INDUCTION_QUESTION_KEYS,
+  shortInductionQuestions,
   shortRepoNameFromRemote,
 } from "../src/cli/induct.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -184,6 +186,42 @@ describe("cli/induct", () => {
   it("INDUCTION_QUESTIONS has unique keys (sanity)", () => {
     const keys = INDUCTION_QUESTIONS.map((q) => q.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("shortInductionQuestions (--short subset)", () => {
+  it("returns exactly 5 questions", () => {
+    expect(shortInductionQuestions()).toHaveLength(5);
+    expect(SHORT_INDUCTION_QUESTION_KEYS).toHaveLength(5);
+  });
+
+  it("every short-mode key exists in the full INDUCTION_QUESTIONS list", () => {
+    const fullKeys = new Set(INDUCTION_QUESTIONS.map((q) => q.key));
+    for (const k of SHORT_INDUCTION_QUESTION_KEYS) {
+      expect(fullKeys.has(k)).toBe(true);
+    }
+  });
+
+  it("preserves the original question order (subset, not reshuffle)", () => {
+    const full = INDUCTION_QUESTIONS.map((q) => q.key);
+    const short = shortInductionQuestions().map((q) => q.key);
+    // Each key in `short` should appear in `full` in the same relative order.
+    let cursor = 0;
+    for (const k of short) {
+      const next = full.indexOf(k, cursor);
+      expect(next).toBeGreaterThanOrEqual(cursor);
+      cursor = next + 1;
+    }
+  });
+
+  it("covers the five highest-signal topics agreed in the v0 plan", () => {
+    expect(SHORT_INDUCTION_QUESTION_KEYS).toEqual([
+      "dangerous-areas",
+      "in-flight-migrations",
+      "invariants",
+      "non-obvious-conventions",
+      "past-incidents",
+    ]);
   });
 });
 

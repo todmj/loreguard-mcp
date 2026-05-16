@@ -50,6 +50,24 @@ export interface InductionQuestion {
  * These are designed to elicit non-obvious, high-consequence knowledge
  * specifically. Generic "we use TypeScript" answers go in CLAUDE.md.
  */
+/**
+ * The five highest-signal questions from the full set, used by
+ * `lore induct --short`. Picked for express onboarding: cover the bits
+ * agents most often get wrong first (dangerous code, in-flight
+ * migrations, hard invariants, hidden conventions, prior incidents).
+ * Skips the meta-leaning prompts (decisions easy to miss, what to ask).
+ *
+ * Order matches the full-set order so the experience feels like a
+ * subset, not a reshuffling.
+ */
+export const SHORT_INDUCTION_QUESTION_KEYS: ReadonlyArray<string> = [
+  "dangerous-areas",
+  "in-flight-migrations",
+  "invariants",
+  "non-obvious-conventions",
+  "past-incidents",
+];
+
 export const INDUCTION_QUESTIONS: ReadonlyArray<InductionQuestion> = [
   {
     key: "dangerous-areas",
@@ -167,6 +185,15 @@ export interface InductResult {
 
 function findQuestion(key: string): InductionQuestion | undefined {
   return INDUCTION_QUESTIONS.find((q) => q.key === key);
+}
+
+/**
+ * The short-mode question list as `InductionQuestion[]`, preserving the
+ * order from `INDUCTION_QUESTIONS`. Used by `lore induct --short`.
+ */
+export function shortInductionQuestions(): InductionQuestion[] {
+  const keys = new Set(SHORT_INDUCTION_QUESTION_KEYS);
+  return INDUCTION_QUESTIONS.filter((q) => keys.has(q.key));
 }
 
 /**

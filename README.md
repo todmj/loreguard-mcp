@@ -107,8 +107,14 @@ get wrong on a codebase they've never seen:
 ```bash
 cd ~/code/payments-svc
 lore induct                  # autodetects repo name from git remote
-lore induct --repo my-svc    # or set it explicitly (repeatable)
+lore induct --short          # 5 highest-signal questions instead of 10
+lore induct --repo my-svc    # set the repo explicitly (repeatable)
 ```
+
+`--short` covers dangerous areas, in-flight migrations, invariants,
+non-obvious conventions, and past incidents — the bits agents most
+often get wrong first. Use it when inducting your tenth repo; use the
+full set the first time.
 
 Every non-blank answer becomes a **DRAFT** record tagged `induction`
 with a 90-day `reviewAfter`. Sourced answers go in as `confidence:
