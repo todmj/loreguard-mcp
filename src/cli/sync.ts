@@ -16,6 +16,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -172,12 +173,28 @@ export interface ExportSyncOptions {
   readonly includeDeprecated?: boolean;
   readonly includeSuperseded?: boolean;
   readonly includeRestricted?: boolean;
+  /**
+   * If true, remove existing <id>.md files in the target directory
+   * BEFORE writing the new export. Only files whose name matches the
+   * 8-char lore-id pattern are removed — hand-written .md files
+   * (e.g. CONTRIBUTING.md) are deliberately left alone.
+   */
+  readonly clean?: boolean;
 }
 
 export interface ExportSyncResult {
   readonly written: ReadonlyArray<string>;
   readonly excluded: { restricted: number; drafts: number };
+  /** Paths removed by `clean: true`. Empty when the flag is off. */
+  readonly removed: ReadonlyArray<string>;
 }
+
+/**
+ * Lore ids are 8 chars from the [a-z2-9] alphabet (see ids.ts). The
+ * `--clean` mode only deletes files matching this exact pattern so a
+ * stray hand-edited file in the directory isn't blown away.
+ */
+const LORE_ID_FILE_RE = /^[a-z2-9]{8}\.md$/;
 
 /**
  * Write one `<id>.md` per record into `dir`. Filter defaults mirror
@@ -214,6 +231,25 @@ export function exportToDir(
     (r) => r.status === "draft" && !opts.includeDrafts,
   ).length;
   mkdirSync(dir, { recursive: true, mode: 0o755 });
+  const removed: string[] = [];
+  if (opts.clean) {
+    let existing: string[] = [];
+    try {
+      existing = readdirSync(dir);
+    } catch {
+      // Directory just created or unreadable — nothing to clean.
+    }
+    for (const name of existing) {
+      if (!LORE_ID_FILE_RE.test(name)) continue;
+      const path = join(dir, name);
+      try {
+        unlinkSync(path);
+        removed.push(path);
+      } catch {
+        // best-effort; skip files we couldn't remove
+      }
+    }
+  }
   const written: string[] = [];
   for (const lore of filtered) {
     const path = join(dir, `${lore.id}.md`);
@@ -228,6 +264,7 @@ export function exportToDir(
   return {
     written,
     excluded: { restricted: excludedRestricted, drafts: excludedDrafts },
+    removed,
   };
 }
 

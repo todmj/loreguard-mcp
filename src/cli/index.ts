@@ -88,10 +88,15 @@ COMMANDS
                             Opt-ins: --include-drafts,
                             --include-deprecated, --include-superseded,
                             --include-restricted.
-  sync export <dir>         Write one .md file per record into <dir>
+  sync export <dir> [--clean]
+                            Write one .md file per record into <dir>
                             (e.g. .lore/) — PR-reviewable team lore.
                             Active + non-restricted by default; same
-                            --include-* opt-ins as \`export\`.
+                            --include-* opt-ins as \`export\`. Pass --clean
+                            to remove existing <id>.md files in <dir>
+                            before writing (only files matching the
+                            8-char id pattern; hand-written .md files
+                            are left alone).
   sync import <dir>         Read every *.md file in <dir> and upsert
                             into the local DB. Restricted records are
                             skipped unless --include-restricted is set.
@@ -666,12 +671,19 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
   const db = openDb();
   try {
     if (sub === "export") {
+      const clean = getBool(args.flags, "clean");
       const r = exportToDir(db, dir, {
         includeDrafts,
         includeDeprecated,
         includeSuperseded,
         includeRestricted,
+        clean,
       });
+      if (r.removed.length > 0) {
+        process.stdout.write(
+          `lore: removed ${r.removed.length} stale <id>.md file(s) before writing\n`,
+        );
+      }
       process.stdout.write(
         `lore: wrote ${r.written.length} record(s) to ${dir}\n`,
       );
