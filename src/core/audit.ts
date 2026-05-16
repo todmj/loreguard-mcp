@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 /**
  * Append-only audit log of MCP tool calls. Lives next to the DB at
- * `~/.lore/audit.jsonl` (mode 0600). Each line is a JSON record:
+ * `~/.loreguard/audit.jsonl` (mode 0600). Each line is a JSON record:
  *   { ts, tool, request, resultCount?, resultIds?, error? }
  *
  * Deliberately doesn't store full result bodies — those are sensitive.
@@ -21,7 +21,7 @@ export interface AuditRecord {
   /**
    * Set when a tool call's response was deliberately suppressed by a
    * trust gate (e.g. `get_lore` returning a refusal for a restricted
-   * record while `LORE_ALLOW_RESTRICTED_MCP` is off). The audit row
+   * record while `LOREGUARD_ALLOW_RESTRICTED_MCP` is off). The audit row
    * still records the request and the resolved id so a human can see
    * the gate fired, but distinct from an `error`.
    */
@@ -29,8 +29,8 @@ export interface AuditRecord {
 }
 
 function defaultAuditPath(): string {
-  if (process.env["LORE_AUDIT_LOG"]) return process.env["LORE_AUDIT_LOG"];
-  return join(homedir(), ".lore", "audit.jsonl");
+  if (process.env["LOREGUARD_AUDIT_LOG"]) return process.env["LOREGUARD_AUDIT_LOG"];
+  return join(homedir(), ".loreguard", "audit.jsonl");
 }
 
 let initialised = false;
@@ -50,7 +50,7 @@ function ensureFile(path: string): void {
 }
 
 export function audit(record: Omit<AuditRecord, "ts">): void {
-  if (process.env["LORE_AUDIT_OFF"]) return;
+  if (process.env["LOREGUARD_AUDIT_OFF"]) return;
   const path = defaultAuditPath();
   ensureFile(path);
   const line =

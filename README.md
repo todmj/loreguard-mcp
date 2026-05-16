@@ -1,4 +1,4 @@
-# lore
+# loreguard
 
 > **Reviewed project memory for coding agents.**
 > Agents can suggest reusable project knowledge; humans decide what
@@ -7,10 +7,11 @@
 
 Every AI coding session starts cold. Agents re-read the same files, rediscover
 the same conventions, and burn tokens on context you already taught them last
-week. `lore` gives them a local memory: record the important bit once, then
-retrieve only the short version when it matters.
+week. `loreguard` gives them a local memory of *lore* — small, reviewed records
+of conventions, decisions, and gotchas — so they retrieve the short version
+when it matters instead of rediscovering it.
 
-`CLAUDE.md` is always-on context (every prompt pays for it). **`lore` is
+`CLAUDE.md` is always-on context (every prompt pays for it). **`loreguard` is
 just-in-time context** — agents call `search_lore` only when a task warrants
 it, and get a compact summary back. Full body only on demand.
 
@@ -25,22 +26,22 @@ git clone https://github.com/todmj/lore-mcp.git
 cd lore-mcp
 pnpm install                  # builds the better-sqlite3 native binding too
 pnpm build
-npm link                      # REQUIRED: puts `lore` + `lore-mcp` on your $PATH
-lore init                     # creates ~/.lore/lore.db (mode 0600)
+npm link                      # REQUIRED: puts `loreguard` + `loreguard-mcp` on your $PATH
+loreguard init                # creates ~/.loreguard/lore.db (mode 0600)
 ```
 
-> **The `npm link` step is required.** Without it, typing `lore` in your
+> **The `npm link` step is required.** Without it, typing `loreguard` in your
 > terminal will give `command not found`. `npm link` symlinks the local
-> `dist/bin/lore.js` and `dist/bin/lore-mcp.js` into your global npm
-> prefix, so `lore`, `lore-mcp`, `lore review`, `lore doctor` etc. work
+> `dist/bin/loreguard.js` and `dist/bin/loreguard-mcp.js` into your global npm
+> prefix, so `loreguard`, `loreguard-mcp`, `loreguard review`, `loreguard doctor` etc. work
 > from any directory just like an npm-installed package would.
 
 Verify it landed:
 
 ```bash
-which lore         # → /opt/homebrew/bin/lore  (or wherever your npm prefix is)
-lore --version     # → 0.1.0
-lore doctor
+which loreguard         # → /opt/homebrew/bin/loreguard  (or wherever your npm prefix is)
+loreguard --version     # → 0.1.0
+loreguard doctor
 ```
 
 To uninstall the link later:
@@ -51,44 +52,44 @@ cd lore-mcp && npm unlink -g
 
 Don't want `npm link`? Skip it and reference the absolute path everywhere
 (e.g. in `claude mcp add` — see [Hook it up to Claude Code](#hook-it-up-to-claude-code)
-below). You won't be able to type `lore` directly though; every CLI
-invocation becomes `node /absolute/path/to/lore-mcp/dist/bin/lore.js …`.
+below). You won't be able to type `loreguard` directly though; every CLI
+invocation becomes `node /absolute/path/to/lore-mcp/dist/bin/loreguard.js …`.
 
 Once the package is published on npm this will simplify to:
 
 ```bash
-npm i -g lore-mcp
-lore init
+npm i -g loreguard-mcp
+loreguard init
 ```
 
 ## 5-minute walkthrough
 
-`lore demo` seeds five illustrative records (tagged `demo`) so you can
+`loreguard demo` seeds five illustrative records (tagged `demo`) so you can
 explore the workflow without authoring content first:
 
 ```bash
-lore init
-lore demo               # five demo records, one of them a draft, one stale
-lore list               # see what was added
-lore search timezone    # the dates/timezone gotcha; flagged stale
-lore search Argon2id    # high-confidence sourced decision
-lore review             # interactive triage of the draft
-lore show <id>          # full body of any record
+loreguard init
+loreguard demo               # five demo records, one of them a draft, one stale
+loreguard list               # see what was added
+loreguard search timezone    # the dates/timezone gotcha; flagged stale
+loreguard search Argon2id    # high-confidence sourced decision
+loreguard review             # interactive triage of the draft
+loreguard show <id>          # full body of any record
 ```
 
 When you're done:
 
 ```bash
-lore demo --clean       # removes only records tagged 'demo'
+loreguard demo --clean       # removes only records tagged 'demo'
 ```
 
-`lore demo` refuses to seed into a non-empty DB unless you pass
+`loreguard demo` refuses to seed into a non-empty DB unless you pass
 `--force`; `--clean` only deletes demo-tagged rows, so it won't touch
 real content.
 
-## Onboarding a repo: `lore induct`
+## Onboarding a repo: `loreguard induct`
 
-`lore demo` shows the *workflow*; `lore induct` helps you generate
+`loreguard demo` shows the *workflow*; `loreguard induct` helps you generate
 *real* starting lore for a specific repo. It's a short interactive
 interview — 10 high-signal questions about the things agents tend to
 get wrong on a codebase they've never seen:
@@ -106,9 +107,9 @@ get wrong on a codebase they've never seen:
 
 ```bash
 cd ~/code/payments-svc
-lore induct                  # autodetects repo name from git remote
-lore induct --short          # 5 highest-signal questions instead of 10
-lore induct --repo my-svc    # set the repo explicitly (repeatable)
+loreguard induct                  # autodetects repo name from git remote
+loreguard induct --short          # 5 highest-signal questions instead of 10
+loreguard induct --repo my-svc    # set the repo explicitly (repeatable)
 ```
 
 `--short` covers dangerous areas, in-flight migrations, invariants,
@@ -119,7 +120,7 @@ full set the first time.
 Every non-blank answer becomes a **DRAFT** record tagged `induction`
 with a 90-day `reviewAfter`. Sourced answers go in as `confidence:
 medium`; unsourced as `low`. Promote what's worth keeping via
-`lore review` — same triage queue agents' suggestions flow through.
+`loreguard review` — same triage queue agents' suggestions flow through.
 Skip a question with a blank line; quit early by typing `q` (drafts
 already saved are preserved).
 
@@ -132,10 +133,10 @@ knowledge (see [What deserves lore?](#what-deserves-lore) above);
 >
 > Don't put secrets, credentials, personal data, patient data, or
 > anything your AI client should not receive in a prompt into lore.
-> `lore` is a retrieval index, not a vault — retrieved records are sent
-> to your configured LLM provider as part of the next prompt. The
+> `loreguard` is a retrieval index, not a vault — retrieved records are
+> sent to your configured LLM provider as part of the next prompt. The
 > `restricted` flag hides records from default search and, over MCP,
-> blocks direct fetch via `get_lore` unless `LORE_ALLOW_RESTRICTED_MCP=1`.
+> blocks direct fetch via `get_lore` unless `LOREGUARD_ALLOW_RESTRICTED_MCP=1`.
 > It is still not DLP or a vault: local users can read the DB, and
 > once a restricted record is deliberately retrieved it may enter the
 > LLM prompt.
@@ -145,13 +146,13 @@ knowledge (see [What deserves lore?](#what-deserves-lore) above);
 Interactively:
 
 ```bash
-lore add
+loreguard add
 ```
 
 Or with flags:
 
 ```bash
-lore add \
+loreguard add \
   --title "We don't use bcrypt anymore" \
   --summary "Argon2id is the new default after the Platform security review." \
   --body "Reasoning: bcrypt's 72-byte truncation bit us in incident 2025-INC-411. \
@@ -204,18 +205,18 @@ useful — a convention, a gotcha, a service-specific rule. Suggestions land as
 **drafts**: invisible to default search until a human approves them.
 
 ```bash
-lore review            # interactive triage queue:
+loreguard review            # interactive triage queue:
                        #   [a]pprove  [r]eject  [e]dit  [s]kip  [q]uit
-lore review --list     # non-interactive list of pending drafts (for piping)
-lore approve <id>      # promote draft → active
-lore reject <id>       # drop a draft (refuses non-drafts)
-lore deprecate <id>    # mark deprecated (still findable with a flag)
-lore supersede <old> --with <new>
-lore verify <id>       # bump lastVerifiedAt and clear stale warning
+loreguard review --list     # non-interactive list of pending drafts (for piping)
+loreguard approve <id>      # promote draft → active
+loreguard reject <id>       # drop a draft (refuses non-drafts)
+loreguard deprecate <id>    # mark deprecated (still findable with a flag)
+loreguard supersede <old> --with <new>
+loreguard verify <id>       # bump lastVerifiedAt and clear stale warning
 ```
 
-`lore review` walks each pending draft one at a time so triage is a
-keystroke per record. `[e]dit` prints the `lore update <id>` template to
+`loreguard review` walks each pending draft one at a time so triage is a
+keystroke per record. `[e]dit` prints the `loreguard update <id>` template to
 copy-paste — keeps the prompt loop simple and avoids reaching for `$EDITOR`.
 
 This is the poisoning-prevention guard: **agents can suggest knowledge, but
@@ -231,19 +232,19 @@ Each entry includes a `reason` summarising the matched signals
 suggestions never get blocked.
 
 Restricted records are surfaced as a count (`restrictedDuplicateCount`)
-rather than titles, unless `LORE_ALLOW_RESTRICTED_MCP=1`. Same env gate
-as `search_lore` and `get_lore`. `lore suggest` from the CLI is local and
+rather than titles, unless `LOREGUARD_ALLOW_RESTRICTED_MCP=1`. Same env gate
+as `search_lore` and `get_lore`. `loreguard suggest` from the CLI is local and
 shows restricted titles directly with a `[restricted]` marker.
 
 ## Search
 
 ```bash
-lore search bcrypt
-lore search "password hashing" --repo payments-svc
-lore show <id>
+loreguard search bcrypt
+loreguard search "password hashing" --repo payments-svc
+loreguard show <id>
 ```
 
-CLI search returns the compact `LoreSummary` (no body) by default. `lore show`
+CLI search returns the compact `LoreSummary` (no body) by default. `loreguard show`
 fetches the full body. Same contract as the MCP tools.
 
 The search payload looks like this — title, summary, scope, trust signals,
@@ -275,13 +276,13 @@ Verbose or duplicated lore can grow context, not shrink it.
 If you ran `npm link` above:
 
 ```bash
-claude mcp add lore lore-mcp
+claude mcp add loreguard loreguard-mcp
 ```
 
 If you didn't, point Claude at the local build directly:
 
 ```bash
-claude mcp add lore node /absolute/path/to/lore-mcp/dist/bin/lore-mcp.js
+claude mcp add loreguard node /absolute/path/to/lore-mcp/dist/bin/loreguard-mcp.js
 ```
 
 (Substitute your actual clone path. `claude mcp list` will show the
@@ -337,7 +338,7 @@ Use `CLAUDE.md` for **always-on** rules the agent should see every session
 — code style, the language you're working in, what to grep for first.
 That context is paid for on every prompt.
 
-Use `lore` for **just-in-time** context that's only relevant sometimes:
+Use `loreguard` for **just-in-time** context that's only relevant sometimes:
 repo conventions, service gotchas, incident lessons, migration rules,
 security decisions, cross-repo knowledge. The agent calls `search_lore`
 only when the task warrants it and gets a compact summary back. Full
@@ -347,7 +348,7 @@ repeated context loading is a consequence — real when records stay
 short and high-signal, lost when they don't.
 
 If a rule applies to every session, it belongs in `CLAUDE.md`. If it
-applies only when you're touching `payments-svc`, it belongs in `lore`.
+applies only when you're touching `payments-svc`, it belongs in `loreguard`.
 
 ## Trust model
 
@@ -360,8 +361,8 @@ Every record carries lifecycle + provenance metadata so retrieval is honest:
 | `confidence` | `low` \| `medium` \| `high`. Default `medium`. *Agent-suggested records cannot claim `high`. Records without a `source` cannot be `high` — invariant enforced at write time.* |
 | `reviewAfter` | ISO date; if past, search flags `stale: true`. |
 | `supersededBy` | ID of the record that replaces this one. |
-| `restricted` | Excluded from search unless `includeRestricted: true`. Via MCP, both `search_lore` and `get_lore` are env-gated by `LORE_ALLOW_RESTRICTED_MCP`; with the gate off, `get_lore` of a restricted id returns a minimal refusal (no title/body). |
-| `lastVerifiedAt` | Bumped by `lore verify <id>`. |
+| `restricted` | Excluded from search unless `includeRestricted: true`. Via MCP, both `search_lore` and `get_lore` are env-gated by `LOREGUARD_ALLOW_RESTRICTED_MCP`; with the gate off, `get_lore` of a restricted id returns a minimal refusal (no title/body). |
+| `lastVerifiedAt` | Bumped by `loreguard verify <id>`. |
 
 `restricted` is a **retrieval guard**, not a data-loss-prevention mechanism.
 Use it to hide a record from a casual search, not to keep secrets out of an
@@ -369,32 +370,32 @@ LLM prompt — once retrieved, the content is in the agent's context.
 
 ## Where data lives
 
-A single SQLite file at `~/.lore/lore.db` (mode `0600`). That's the entire
+A single SQLite file at `~/.loreguard/lore.db` (mode `0600`). That's the entire
 storage layer.
 
 **For v0.1, SQLite is the canonical source of truth.** Markdown files
-under `.lore/` are a *sync artifact*: PR-reviewable, committable to the
-repo, and round-trippable with `lore sync`, but the live record lives
+under `.loreguard/` are a *sync artifact*: PR-reviewable, committable to the
+repo, and round-trippable with `loreguard sync`, but the live record lives
 in SQLite. Drop one machine's DB and rebuild it by importing your
-team's `.lore/` directory.
+team's `.loreguard/` directory.
 
-Override the path with `LORE_DB=/some/other.db` for tests or alternate
+Override the path with `LOREGUARD_DB=/some/other.db` for tests or alternate
 profiles.
 
 ### Team sync — Markdown round-trip
 
-`lore sync export <dir>` writes one `.md` file per record into `<dir>`
-(typically `.lore/` in the repo). `lore sync import <dir>` is the
+`loreguard sync export <dir>` writes one `.md` file per record into `<dir>`
+(typically `.loreguard/` in the repo). `loreguard sync import <dir>` is the
 inverse — every file is upserted by id. Combined with normal git
-workflow, the PR review *is* the trust gate: a record in `.lore/` got
+workflow, the PR review *is* the trust gate: a record in `.loreguard/` got
 there through code review.
 
 ```bash
-lore sync export .lore               # active + non-restricted by default
-lore sync export .lore --include-deprecated --include-superseded
-lore sync export .lore --clean       # remove stale <id>.md files first
-lore sync import .lore               # upsert every .md back into SQLite
-lore sync import .lore --include-restricted
+loreguard sync export .loreguard               # active + non-restricted by default
+loreguard sync export .loreguard --include-deprecated --include-superseded
+loreguard sync export .loreguard --clean       # remove stale <id>.md files first
+loreguard sync import .loreguard               # upsert every .md back into SQLite
+loreguard sync import .loreguard --include-restricted
 ```
 
 Each `.md` is YAML-frontmatter + Markdown body. Frontmatter is
@@ -407,42 +408,42 @@ Defaults are conservative:
   restricted titles to git is usually a mistake; if your repo is private
   and you want the history, pass `--include-restricted`.
 - **Drafts are excluded** from export by default. They haven't been
-  reviewed yet; `lore review` is the gate, not `git push`.
+  reviewed yet; `loreguard review` is the gate, not `git push`.
 - **Imports respect the file's declared `status`.** If a `.md` says
   `status: active`, it lands as active — the PR is the review gate.
   Restricted-record files are skipped on import unless
   `--include-restricted` is set.
 - Files without frontmatter, or missing required fields (`id`, `title`,
-  `summary`, `status`), are skipped with a reason — `lore sync import`
+  `summary`, `status`), are skipped with a reason — `loreguard sync import`
   never crashes on a malformed file.
 
-A few things `lore sync` deliberately does **not** do:
+A few things `loreguard sync` deliberately does **not** do:
 
-- **`lore sync export` is not a mirror.** It overwrites the `<id>.md`
+- **`loreguard sync export` is not a mirror.** It overwrites the `<id>.md`
   files for records being exported, but does not remove `.md` files
   that have no corresponding record. Pass `--clean` if you want a
   deterministic mirror; otherwise, clear the directory first.
-- **`lore sync import` is upsert-only.** It creates new records and
+- **`loreguard sync import` is upsert-only.** It creates new records and
   updates existing ones by id. It does **not** delete local records
   that are absent from the directory. If your team has removed a
-  record from `.lore/`, use `lore delete <id>` locally as well.
+  record from `.loreguard/`, use `loreguard delete <id>` locally as well.
 - **The frontmatter parser is intentionally small** — flat scalars,
   ISO dates, booleans, and string arrays only. Treat the generated
   format as canonical; if you hand-edit a `.md`, keep the structure
   the same.
 
-`lore export --json` still exists for one-file JSON backup and
-inspection; `lore sync` is for the version-controlled team flow.
+`loreguard export --json` still exists for one-file JSON backup and
+inspection; `loreguard sync` is for the version-controlled team flow.
 
 ### Inspect / back up your lore
 
-`lore export` writes the DB as a single JSON document so you can read,
+`loreguard export` writes the DB as a single JSON document so you can read,
 diff, copy, or pipe it without touching SQLite directly:
 
 ```bash
-lore export                              # stdout, active + non-restricted
-lore export --out lore-backup.json       # file (mode 0600)
-lore export --include-drafts --include-deprecated --include-superseded --include-restricted --out full.json
+loreguard export                              # stdout, active + non-restricted
+loreguard export --out lore-backup.json       # file (mode 0600)
+loreguard export --include-drafts --include-deprecated --include-superseded --include-restricted --out full.json
 ```
 
 Envelope: `{ schemaVersion: 1, exportedAt, records: [Lore, ...] }`. Stable
@@ -453,13 +454,13 @@ the same DB diff cleanly.
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-FLOW.md).
 
-**`lore` protects against:**
+**`loreguard` protects against:**
 
 - Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; both MCP `search_lore` and `get_lore` env-gated for restricted records).
 - Stale or unreviewed memory dominating retrieval (`stale: true` flag; lifecycle filtering; agent suggestions land as drafts).
-- Audit-log leakage of body content (sanitised pre-write; `lore audit` renders redacted by default).
+- Audit-log leakage of body content (sanitised pre-write; `loreguard audit` renders redacted by default).
 
-**`lore` does not protect against:**
+**`loreguard` does not protect against:**
 
 - A malicious local user with filesystem access. The DB is mode 0600 but anyone who can read it can read every record.
 - Secrets intentionally added to lore. Use a secrets manager; `restricted` is a retrieval guard, not a vault.
@@ -469,9 +470,9 @@ See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-F
 Short version:
 
 - The server uses stdio transport only. No network listener, ever.
-- The `lore` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs.
+- The `loreguard` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs.
 - The DB file is local, mode 0600, in your home directory.
-- Audit log at `~/.lore/audit.jsonl`: every **MCP tool call** timestamped (with request args and result IDs, never result bodies). CLI mutations are recorded separately in the SQLite `events` table (`created`, `suggested`, `approved`, `deprecated`, `superseded`, `verified`, `updated`, `deleted`) keyed by lore id.
+- Audit log at `~/.loreguard/audit.jsonl`: every **MCP tool call** timestamped (with request args and result IDs, never result bodies). CLI mutations are recorded separately in the SQLite `events` table (`created`, `suggested`, `approved`, `deprecated`, `superseded`, `verified`, `updated`, `deleted`) keyed by lore id.
 
 Data does leave your machine the moment Claude reads a tool result — it goes
 to your LLM provider as part of the next prompt. That's the standard trust

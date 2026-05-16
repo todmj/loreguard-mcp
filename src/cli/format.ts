@@ -23,7 +23,7 @@ function colour(useColour: boolean, code: string, s: string): string {
 
 function useColour(): boolean {
   if (process.env["NO_COLOR"]) return false;
-  if (process.env["LORE_NO_COLOR"]) return false;
+  if (process.env["LOREGUARD_NO_COLOR"]) return false;
   return process.stdout.isTTY === true;
 }
 
@@ -83,7 +83,7 @@ export function renderSummary(s: LoreSummary): string {
   return `${header}\n  ${s.summary}\n  ${meta}`;
 }
 
-/** Render the full lore (used by `lore show`). */
+/** Render the full lore (used by `loreguard show`). */
 export function renderFull(l: Lore): string {
   const c = useColour();
   const lines: string[] = [];

@@ -1,6 +1,6 @@
 /**
  * MCP restricted-get gate. `search_lore` env-gates restricted records via
- * LORE_ALLOW_RESTRICTED_MCP; `get_lore` must enforce the same gate so an
+ * LOREGUARD_ALLOW_RESTRICTED_MCP; `get_lore` must enforce the same gate so an
  * agent with a known id can't sidestep the search filter. These tests
  * exercise the pure helpers (no stdio harness required).
  */
@@ -15,7 +15,7 @@ describe("redactRestricted", () => {
       id: "abc12345",
       restricted: true,
       error: "restricted",
-      hint: "Set LORE_ALLOW_RESTRICTED_MCP=1 to allow MCP access to restricted lore.",
+      hint: "Set LOREGUARD_ALLOW_RESTRICTED_MCP=1 to allow MCP access to restricted lore.",
     });
     // Spell out the negatives in case the shape grows by accident later.
     const keys = Object.keys(r);
@@ -40,7 +40,7 @@ describe("shouldGateRestrictedGet", () => {
     expect(
       shouldGateRestrictedGet(
         { restricted: false },
-        { LORE_ALLOW_RESTRICTED_MCP: "1" },
+        { LOREGUARD_ALLOW_RESTRICTED_MCP: "1" },
       ),
     ).toBe(false);
   });
@@ -53,25 +53,25 @@ describe("shouldGateRestrictedGet", () => {
     expect(
       shouldGateRestrictedGet(
         { restricted: true },
-        { LORE_ALLOW_RESTRICTED_MCP: "" },
+        { LOREGUARD_ALLOW_RESTRICTED_MCP: "" },
       ),
     ).toBe(true);
     expect(
       shouldGateRestrictedGet(
         { restricted: true },
-        { LORE_ALLOW_RESTRICTED_MCP: "yes" },
+        { LOREGUARD_ALLOW_RESTRICTED_MCP: "yes" },
       ),
     ).toBe(true);
     expect(
       shouldGateRestrictedGet(
         { restricted: true },
-        { LORE_ALLOW_RESTRICTED_MCP: "0" },
+        { LOREGUARD_ALLOW_RESTRICTED_MCP: "0" },
       ),
     ).toBe(true);
     expect(
       shouldGateRestrictedGet(
         { restricted: true },
-        { LORE_ALLOW_RESTRICTED_MCP: "true" },
+        { LOREGUARD_ALLOW_RESTRICTED_MCP: "true" },
       ),
     ).toBe(true);
   });
@@ -80,7 +80,7 @@ describe("shouldGateRestrictedGet", () => {
     expect(
       shouldGateRestrictedGet(
         { restricted: true },
-        { LORE_ALLOW_RESTRICTED_MCP: "1" },
+        { LOREGUARD_ALLOW_RESTRICTED_MCP: "1" },
       ),
     ).toBe(false);
   });

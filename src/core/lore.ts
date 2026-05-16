@@ -235,7 +235,7 @@ export function addLore(db: Database, input: AddLoreInput): Lore {
 }
 
 /**
- * Shape used by `lore sync import`: a full Lore record reconstructed
+ * Shape used by `loreguard sync import`: a full Lore record reconstructed
  * from a Markdown file's frontmatter. Differs from AddLoreInput in
  * three ways:
  *
@@ -275,7 +275,7 @@ export interface ImportResult {
 }
 
 /**
- * Upsert a single record by id, used by `lore sync import`. Creates
+ * Upsert a single record by id, used by `loreguard sync import`. Creates
  * a new row when the id is unknown; otherwise updates every field
  * (status included — unlike `updateLore`, which deliberately refuses
  * status changes because the interactive paths go through
@@ -405,7 +405,7 @@ export function upsertLoreFromImport(
 
 /**
  * Agent-authored entry. Always lands as `status: 'draft'` — hidden from
- * default search until a human runs `lore approve <id>`. This is the
+ * default search until a human runs `loreguard approve <id>`. This is the
  * tool the MCP server exposes; agents cannot promote their own records.
  */
 export function suggestLore(db: Database, input: AddLoreInput): Lore {
@@ -658,7 +658,7 @@ export function updateLore(
 /**
  * Reject a draft. Hard-deletes the row + cascades repos/tags, but emits
  * a `rejected` event (not `deleted`) so the audit chain shows the human
- * triage decision distinct from a manual `lore delete`. Refuses to act
+ * triage decision distinct from a manual `loreguard delete`. Refuses to act
  * on non-drafts — promoted records get `deprecateLore` / `supersedeLore`
  * instead.
  *
@@ -882,7 +882,7 @@ export interface PossibleDuplicateResult {
   /**
    * Records the caller is allowed to see. By default this excludes
    * restricted records; pass `allowRestricted: true` to include them
-   * (the MCP layer wires this to LORE_ALLOW_RESTRICTED_MCP).
+   * (the MCP layer wires this to LOREGUARD_ALLOW_RESTRICTED_MCP).
    */
   readonly duplicates: PossibleDuplicate[];
   /**
@@ -909,7 +909,7 @@ export interface PossibleDuplicateResult {
  *   - Excludes the just-inserted record itself (caller passes its id).
  *   - Restricted records are excluded from `duplicates` by default but
  *     counted in `restrictedDuplicateCount`. Pass `allowRestricted: true`
- *     (the MCP server wires this to LORE_ALLOW_RESTRICTED_MCP) to include
+ *     (the MCP server wires this to LOREGUARD_ALLOW_RESTRICTED_MCP) to include
  *     restricted titles in `duplicates` instead.
  *
  * Returns an empty result when the title is too short for meaningful
@@ -1023,7 +1023,7 @@ function tokenizeTitleForDuplicates(title: string): string[] {
 
 /**
  * Recent lore across all lifecycle states (active + draft + deprecated),
- * freshest first. Used by `lore list` for at-a-glance browse.
+ * freshest first. Used by `loreguard list` for at-a-glance browse.
  */
 export function listRecent(db: Database, limit = 20): LoreSummary[] {
   return searchLore(db, {
@@ -1034,7 +1034,7 @@ export function listRecent(db: Database, limit = 20): LoreSummary[] {
   });
 }
 
-/** Drafts awaiting human review. Surfaced by `lore review`. */
+/** Drafts awaiting human review. Surfaced by `loreguard review`. */
 export function listDrafts(db: Database): LoreSummary[] {
   const rows = db
     .prepare(

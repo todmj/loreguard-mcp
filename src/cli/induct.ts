@@ -1,8 +1,8 @@
 /**
- * `lore induct` — repo onboarding interview. Walks a human through a
+ * `loreguard induct` — repo onboarding interview. Walks a human through a
  * fixed list of high-signal questions and turns each non-blank answer
  * into a DRAFT lore record. Nothing lands as `active` here — promotion
- * is done via the normal `lore review` flow, which is the existing
+ * is done via the normal `loreguard review` flow, which is the existing
  * trust gate.
  *
  * Why drafts: the induction is a cold-start aid, not an authority. The
@@ -52,7 +52,7 @@ export interface InductionQuestion {
  */
 /**
  * The five highest-signal questions from the full set, used by
- * `lore induct --short`. Picked for express onboarding: cover the bits
+ * `loreguard induct --short`. Picked for express onboarding: cover the bits
  * agents most often get wrong first (dangerous code, in-flight
  * migrations, hard invariants, hidden conventions, prior incidents).
  * Skips the meta-leaning prompts (decisions easy to miss, what to ask).
@@ -189,7 +189,7 @@ function findQuestion(key: string): InductionQuestion | undefined {
 
 /**
  * The short-mode question list as `InductionQuestion[]`, preserving the
- * order from `INDUCTION_QUESTIONS`. Used by `lore induct --short`.
+ * order from `INDUCTION_QUESTIONS`. Used by `loreguard induct --short`.
  */
 export function shortInductionQuestions(): InductionQuestion[] {
   const keys = new Set(SHORT_INDUCTION_QUESTION_KEYS);

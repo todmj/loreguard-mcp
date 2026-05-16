@@ -39,10 +39,10 @@ import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
 import { exportToDir, importFromDir } from "./sync.js";
 
-const HELP = `lore — local memory for AI coding agents
+const HELP = `loreguard — reviewed project memory for AI coding agents
 
 USAGE
-  lore <command> [options]
+  loreguard <command> [options]
 
 COMMANDS
   init                      Create / migrate the local DB
@@ -90,7 +90,7 @@ COMMANDS
                             --include-restricted.
   sync export <dir> [--clean]
                             Write one .md file per record into <dir>
-                            (e.g. .lore/) — PR-reviewable team lore.
+                            (e.g. .loreguard/) — PR-reviewable team lore.
                             Active + non-restricted by default; same
                             --include-* opt-ins as \`export\`. Pass --clean
                             to remove existing <id>.md files in <dir>
@@ -120,26 +120,26 @@ COMMANDS
                             and turns each non-blank answer into a DRAFT
                             lore record (tagged 'induction', 90-day
                             review window). Drafts only — promote via
-                            \`lore review\`. Use --repo to override the
+                            \`loreguard review\`. Use --repo to override the
                             auto-detected name (repeatable).
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
                             agent reliably calls search_lore.
-  mcp                       Run the MCP server on stdio (same as lore-mcp).
+  mcp                       Run the MCP server on stdio (same as loreguard-mcp).
 
 EXAMPLES
-  lore add --title "Argon2id is the default" --summary "..." --body "..."
-  lore search "password hashing" --repo payments-svc
-  lore review
-  lore approve 7vk3qm9b
+  loreguard add --title "Argon2id is the default" --summary "..." --body "..."
+  loreguard search "password hashing" --repo payments-svc
+  loreguard review
+  loreguard approve 7vk3qm9b
 `;
 
 async function cmdInit(): Promise<number> {
   const db = openDb();
   db.close();
   // openDb runs migrations and creates the file with 0600 perms.
-  process.stdout.write("lore: initialised at ~/.lore/lore.db\n");
+  process.stdout.write("loreguard: initialised at ~/.loreguard/lore.db\n");
   return 0;
 }
 
@@ -165,7 +165,7 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
 
   if (!title) title = (await prompt("Title: ")).trim();
   if (!title) {
-    process.stderr.write("lore: title is required\n");
+    process.stderr.write("loreguard: title is required\n");
     return 1;
   }
   if (!summary) summary = (await prompt("Summary (one line): ")).trim();
@@ -198,10 +198,10 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
       restricted,
     });
     process.stdout.write(
-      `lore: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,
+      `loreguard: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,
     );
     // For drafts (lore suggest), surface near-duplicates so the human
-    // reviewing the queue isn't surprised later. Quiet for `lore add` —
+    // reviewing the queue isn't surprised later. Quiet for `loreguard add` —
     // humans entering their own records have already decided.
     //
     // CLI runs locally as the trust principal (the human at the terminal),
@@ -215,7 +215,7 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
       );
       if (duplicates.length > 0) {
         process.stdout.write(
-          `Possible duplicates (review with \`lore show <id>\`):\n`,
+          `Possible duplicates (review with \`loreguard show <id>\`):\n`,
         );
         for (const d of duplicates) {
           const restrictedTag = d.restricted ? " [restricted]" : "";
@@ -263,7 +263,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
       includeRestricted,
     });
     if (hits.length === 0) {
-      process.stdout.write("lore: no matches\n");
+      process.stdout.write("loreguard: no matches\n");
       return 0;
     }
     for (const h of hits) {
@@ -278,14 +278,14 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdShow(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: show <id> requires an id\n");
+    process.stderr.write("loreguard: show <id> requires an id\n");
     return 2;
   }
   const db = openDb();
   try {
     const lore = getLore(db, id);
     if (!lore) {
-      process.stderr.write(`lore: no record with id ${id}\n`);
+      process.stderr.write(`loreguard: no record with id ${id}\n`);
       return 1;
     }
     process.stdout.write(renderFull(lore) + "\n");
@@ -300,7 +300,7 @@ async function cmdList(): Promise<number> {
   try {
     const hits = listRecent(db, 50);
     if (hits.length === 0) {
-      process.stdout.write("lore: nothing here yet — try `lore add`.\n");
+      process.stdout.write("loreguard: nothing here yet — try `loreguard add`.\n");
       return 0;
     }
     for (const h of hits) process.stdout.write(renderSummary(h) + "\n\n");
@@ -315,13 +315,13 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
   try {
     const drafts = listDrafts(db);
     if (drafts.length === 0) {
-      process.stdout.write("lore: no pending drafts.\n");
+      process.stdout.write("loreguard: no pending drafts.\n");
       return 0;
     }
 
     // Two modes: default is interactive (per-draft a/r/e/s/q triage).
     // `--list` or non-TTY stdin falls back to the old "print them all" view
-    // so `lore review | grep` doesn't hang.
+    // so `loreguard review | grep` doesn't hang.
     const listOnly =
       getBool(args.flags, "list") || !process.stdin.isTTY;
 
@@ -329,7 +329,7 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
       process.stdout.write(`${drafts.length} draft(s) awaiting review:\n\n`);
       for (const d of drafts) process.stdout.write(renderSummary(d) + "\n\n");
       process.stdout.write(
-        "Use `lore approve <id>` to promote, or `lore reject <id>` to drop.\n",
+        "Use `loreguard approve <id>` to promote, or `loreguard reject <id>` to drop.\n",
       );
       return 0;
     }
@@ -356,7 +356,7 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
         .toLowerCase();
 
       if (answer === "q" || answer === "quit" || answer === "exit") {
-        process.stdout.write("\nlore: stopped.\n");
+        process.stdout.write("\nloreguard: stopped.\n");
         break;
       }
       if (answer === "a" || answer === "approve" || answer === "y") {
@@ -380,11 +380,11 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
       if (answer === "e" || answer === "edit") {
         // Don't reach for $EDITOR yet — print the update command the user
         // can paste with their preferred shell tooling. Keeps the prompt
-        // loop simple; user can come back to `lore review` next.
+        // loop simple; user can come back to `loreguard review` next.
         process.stdout.write(
           `\nTo edit this draft, run:\n` +
-            `  lore update ${d.id} --summary "..." --body "..."\n` +
-            `Then re-run \`lore review\` to triage it again.\n\n`,
+            `  loreguard update ${d.id} --summary "..." --body "..."\n` +
+            `Then re-run \`loreguard review\` to triage it again.\n\n`,
         );
         skipped++;
         continue;
@@ -406,7 +406,7 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdReject(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: reject <id> requires an id\n");
+    process.stderr.write("loreguard: reject <id> requires an id\n");
     return 2;
   }
   const db = openDb();
@@ -414,11 +414,11 @@ async function cmdReject(args: ReturnType<typeof parseArgs>): Promise<number> {
     const ok = rejectLore(db, id);
     if (!ok) {
       process.stderr.write(
-        `lore: cannot reject ${id} (unknown id or not a draft; use \`lore deprecate\` for active records)\n`,
+        `loreguard: cannot reject ${id} (unknown id or not a draft; use \`loreguard deprecate\` for active records)\n`,
       );
       return 1;
     }
-    process.stdout.write(`lore: rejected ${id}\n`);
+    process.stdout.write(`loreguard: rejected ${id}\n`);
     return 0;
   } finally {
     db.close();
@@ -428,7 +428,7 @@ async function cmdReject(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdApprove(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: approve <id> requires an id\n");
+    process.stderr.write("loreguard: approve <id> requires an id\n");
     return 2;
   }
   const db = openDb();
@@ -436,11 +436,11 @@ async function cmdApprove(args: ReturnType<typeof parseArgs>): Promise<number> {
     const lore = approveLore(db, id);
     if (!lore) {
       process.stderr.write(
-        `lore: ${id} is not a pending draft (already active, deprecated, or unknown)\n`,
+        `loreguard: ${id} is not a pending draft (already active, deprecated, or unknown)\n`,
       );
       return 1;
     }
-    process.stdout.write(`lore: approved ${lore.id}\n`);
+    process.stdout.write(`loreguard: approved ${lore.id}\n`);
     return 0;
   } finally {
     db.close();
@@ -450,17 +450,17 @@ async function cmdApprove(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdDeprecate(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: deprecate <id> requires an id\n");
+    process.stderr.write("loreguard: deprecate <id> requires an id\n");
     return 2;
   }
   const db = openDb();
   try {
     const lore = deprecateLore(db, id);
     if (!lore) {
-      process.stderr.write(`lore: no record with id ${id}\n`);
+      process.stderr.write(`loreguard: no record with id ${id}\n`);
       return 1;
     }
-    process.stdout.write(`lore: deprecated ${lore.id}\n`);
+    process.stdout.write(`loreguard: deprecated ${lore.id}\n`);
     return 0;
   } finally {
     db.close();
@@ -471,7 +471,7 @@ async function cmdSupersede(args: ReturnType<typeof parseArgs>): Promise<number>
   const oldId = args.positionals[0];
   const newId = getString(args.flags, "with");
   if (!oldId || !newId) {
-    process.stderr.write("lore: supersede <old-id> --with <new-id>\n");
+    process.stderr.write("loreguard: supersede <old-id> --with <new-id>\n");
     return 2;
   }
   const db = openDb();
@@ -479,12 +479,12 @@ async function cmdSupersede(args: ReturnType<typeof parseArgs>): Promise<number>
     const lore = supersedeLore(db, oldId, newId);
     if (!lore) {
       process.stderr.write(
-        `lore: couldn't supersede ${oldId} with ${newId} (check both ids exist and are not the same)\n`,
+        `loreguard: couldn't supersede ${oldId} with ${newId} (check both ids exist and are not the same)\n`,
       );
       return 1;
     }
     process.stdout.write(
-      `lore: ${oldId} superseded by ${newId}\n`,
+      `loreguard: ${oldId} superseded by ${newId}\n`,
     );
     return 0;
   } finally {
@@ -495,7 +495,7 @@ async function cmdSupersede(args: ReturnType<typeof parseArgs>): Promise<number>
 async function cmdVerify(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: verify <id> requires an id\n");
+    process.stderr.write("loreguard: verify <id> requires an id\n");
     return 2;
   }
   const reviewAfter = getString(args.flags, "review-after");
@@ -503,11 +503,11 @@ async function cmdVerify(args: ReturnType<typeof parseArgs>): Promise<number> {
   try {
     const lore = verifyLore(db, id, reviewAfter);
     if (!lore) {
-      process.stderr.write(`lore: no record with id ${id}\n`);
+      process.stderr.write(`loreguard: no record with id ${id}\n`);
       return 1;
     }
     process.stdout.write(
-      `lore: verified ${lore.id}` +
+      `loreguard: verified ${lore.id}` +
         ` (at ${lore.lastVerifiedAt}` +
         (lore.reviewAfter ? `; next review ${lore.reviewAfter}` : "") +
         `)\n`,
@@ -521,7 +521,7 @@ async function cmdVerify(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: update <id> requires an id\n");
+    process.stderr.write("loreguard: update <id> requires an id\n");
     return 2;
   }
   const title = getString(args.flags, "title");
@@ -546,19 +546,19 @@ async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
   // R5 — refuse contradictory combinations rather than silently picking one.
   if (clearSource && source !== undefined) {
     process.stderr.write(
-      "lore: --clear-source conflicts with --source <url>; pick one\n",
+      "loreguard: --clear-source conflicts with --source <url>; pick one\n",
     );
     return 2;
   }
   if (clearRepos && reposFlag.length > 0) {
     process.stderr.write(
-      "lore: --clear-repos conflicts with --repo; pick one\n",
+      "loreguard: --clear-repos conflicts with --repo; pick one\n",
     );
     return 2;
   }
   if (clearTags && tagsFlag.length > 0) {
     process.stderr.write(
-      "lore: --clear-tags conflicts with --tag; pick one\n",
+      "loreguard: --clear-tags conflicts with --tag; pick one\n",
     );
     return 2;
   }
@@ -582,7 +582,7 @@ async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
 
   if (Object.keys(patch).length === 0) {
     process.stderr.write(
-      "lore: update needs at least one field flag (--title, --summary, --body, --source, --clear-source, --review-after, --confidence, --team, --repo, --clear-repos, --tag, --clear-tags, --restricted/--unrestricted)\n",
+      "loreguard: update needs at least one field flag (--title, --summary, --body, --source, --clear-source, --review-after, --confidence, --team, --repo, --clear-repos, --tag, --clear-tags, --restricted/--unrestricted)\n",
     );
     return 2;
   }
@@ -591,10 +591,10 @@ async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
   try {
     const lore = updateLore(db, id, patch as Parameters<typeof updateLore>[2]);
     if (!lore) {
-      process.stderr.write(`lore: no record with id ${id}\n`);
+      process.stderr.write(`loreguard: no record with id ${id}\n`);
       return 1;
     }
-    process.stdout.write(`lore: updated ${lore.id}\n`);
+    process.stdout.write(`loreguard: updated ${lore.id}\n`);
     return 0;
   } finally {
     db.close();
@@ -604,17 +604,17 @@ async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdDelete(args: ReturnType<typeof parseArgs>): Promise<number> {
   const id = args.positionals[0];
   if (!id) {
-    process.stderr.write("lore: delete <id> requires an id\n");
+    process.stderr.write("loreguard: delete <id> requires an id\n");
     return 2;
   }
   const db = openDb();
   try {
     const ok = deleteLore(db, id);
     if (!ok) {
-      process.stderr.write(`lore: no record with id ${id}\n`);
+      process.stderr.write(`loreguard: no record with id ${id}\n`);
       return 1;
     }
-    process.stdout.write(`lore: deleted ${id}\n`);
+    process.stdout.write(`loreguard: deleted ${id}\n`);
     return 0;
   } finally {
     db.close();
@@ -626,7 +626,7 @@ async function cmdTags(): Promise<number> {
   try {
     const ts = listTags(db);
     if (ts.length === 0) {
-      process.stdout.write("lore: no tags yet\n");
+      process.stdout.write("loreguard: no tags yet\n");
       return 0;
     }
     process.stdout.write(ts.join("\n") + "\n");
@@ -641,7 +641,7 @@ async function cmdRepos(): Promise<number> {
   try {
     const rs = listRepos(db);
     if (rs.length === 0) {
-      process.stdout.write("lore: no repos yet\n");
+      process.stdout.write("loreguard: no repos yet\n");
       return 0;
     }
     process.stdout.write(rs.join("\n") + "\n");
@@ -656,12 +656,12 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
   const dir = args.positionals[1];
   if (sub !== "export" && sub !== "import") {
     process.stderr.write(
-      "lore: sync requires a subcommand — `lore sync export <dir>` or `lore sync import <dir>`\n",
+      "loreguard: sync requires a subcommand — `loreguard sync export <dir>` or `loreguard sync import <dir>`\n",
     );
     return 2;
   }
   if (!dir) {
-    process.stderr.write(`lore: sync ${sub} requires a directory path\n`);
+    process.stderr.write(`loreguard: sync ${sub} requires a directory path\n`);
     return 2;
   }
   const includeDrafts = getBool(args.flags, "include-drafts");
@@ -681,11 +681,11 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
       });
       if (r.removed.length > 0) {
         process.stdout.write(
-          `lore: removed ${r.removed.length} stale <id>.md file(s) before writing\n`,
+          `loreguard: removed ${r.removed.length} stale <id>.md file(s) before writing\n`,
         );
       }
       process.stdout.write(
-        `lore: wrote ${r.written.length} record(s) to ${dir}\n`,
+        `loreguard: wrote ${r.written.length} record(s) to ${dir}\n`,
       );
       if (r.excluded.restricted > 0) {
         process.stdout.write(
@@ -702,7 +702,7 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
     // import
     const r = importFromDir(db, dir, { includeRestricted });
     process.stdout.write(
-      `lore: imported ${r.created} new + ${r.updated} updated record(s) from ${dir}\n`,
+      `loreguard: imported ${r.created} new + ${r.updated} updated record(s) from ${dir}\n`,
     );
     if (r.skipped.length > 0) {
       process.stdout.write(`  skipped ${r.skipped.length} file(s):\n`);
@@ -744,7 +744,7 @@ async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
         // best-effort: some filesystems (e.g. Windows under WSL) can't chmod
       }
       process.stdout.write(
-        `lore: exported ${records.length} record(s) to ${out}\n`,
+        `loreguard: exported ${records.length} record(s) to ${out}\n`,
       );
     } else {
       process.stdout.write(json);
@@ -759,7 +759,7 @@ async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
   const force = getBool(args.flags, "force");
   const clean = getBool(args.flags, "clean");
   if (force && clean) {
-    process.stderr.write("lore: --force and --clean are mutually exclusive\n");
+    process.stderr.write("loreguard: --force and --clean are mutually exclusive\n");
     return 2;
   }
   const db = openDb();
@@ -768,30 +768,30 @@ async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
       const removed = cleanDemo(db);
       process.stdout.write(
         removed === 0
-          ? "lore: no demo records found (nothing to clean)\n"
-          : `lore: removed ${removed} demo record(s)\n`,
+          ? "loreguard: no demo records found (nothing to clean)\n"
+          : `loreguard: removed ${removed} demo record(s)\n`,
       );
       return 0;
     }
     const existing = countLore(db);
     if (existing > 0 && !force) {
       process.stderr.write(
-        `lore: refusing to seed demo into a non-empty DB (${existing} record(s) already present).\n` +
-          "      Re-run with --force to seed anyway, or `lore demo --clean` to remove demo records later.\n",
+        `loreguard: refusing to seed demo into a non-empty DB (${existing} record(s) already present).\n` +
+          "      Re-run with --force to seed anyway, or `loreguard demo --clean` to remove demo records later.\n",
       );
       return 1;
     }
     const { inserted, ids } = seedDemo(db);
     process.stdout.write(
-      `lore: seeded ${inserted} demo record(s).\n\n` +
+      `loreguard: seeded ${inserted} demo record(s).\n\n` +
         `Try:\n` +
-        `  lore list\n` +
-        `  lore search "timezone"\n` +
-        `  lore review        # the demo set includes one draft to triage\n\n` +
+        `  loreguard list\n` +
+        `  loreguard search "timezone"\n` +
+        `  loreguard review        # the demo set includes one draft to triage\n\n` +
         `Cleanup when you're done:\n` +
-        `  lore demo --clean  # removes only records tagged 'demo'\n`,
+        `  loreguard demo --clean  # removes only records tagged 'demo'\n`,
     );
-    // Echo the ids so a curious user can `lore show <id>` immediately.
+    // Echo the ids so a curious user can `loreguard show <id>` immediately.
     for (const id of ids) process.stdout.write(`  ${id}\n`);
     return 0;
   } finally {
@@ -850,7 +850,7 @@ async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
 
   process.stdout.write(
     `\nlore induct — ${questions.length} questions${short ? " (--short)" : ""}. ` +
-      `Answers become DRAFTS (review with \`lore review\` afterwards).\n` +
+      `Answers become DRAFTS (review with \`loreguard review\` afterwards).\n` +
       `Press blank-line to skip a question, type 'q' on the answer line to quit early.\n` +
       (repos.length > 0 ? `Repos: ${repos.join(", ")}\n` : "") +
       `\n`,
@@ -897,7 +897,7 @@ async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
     if (created.length > 0) {
       process.stdout.write(
-        `\nReview them with: lore review\n`,
+        `\nReview them with: loreguard review\n`,
       );
     }
     return 0;
@@ -924,9 +924,9 @@ async function cmdDoctor(): Promise<number> {
  */
 async function cmdAudit(args: ReturnType<typeof parseArgs>): Promise<number> {
   const path =
-    process.env["LORE_AUDIT_LOG"] ?? join(homedir(), ".lore", "audit.jsonl");
+    process.env["LOREGUARD_AUDIT_LOG"] ?? join(homedir(), ".loreguard", "audit.jsonl");
   if (!existsSync(path)) {
-    process.stdout.write("lore: no audit log yet\n");
+    process.stdout.write("loreguard: no audit log yet\n");
     return 0;
   }
   const n = Number(getString(args.flags, "n") ?? "20");
@@ -1082,12 +1082,12 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
           return 0;
         }
       default:
-        process.stderr.write(`lore: unknown command '${cmd}'\n${HELP}`);
+        process.stderr.write(`loreguard: unknown command '${cmd}'\n${HELP}`);
         return 2;
     }
   } catch (err) {
     process.stderr.write(
-      `lore: ${err instanceof Error ? err.message : String(err)}\n`,
+      `loreguard: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return 1;
   }
