@@ -147,6 +147,21 @@ reusable convention, gotcha, decision, or service-specific rule that
 would help future agents. Do not save temporary task state or speculation.
 ```
 
+## Why not just CLAUDE.md?
+
+Use `CLAUDE.md` for **always-on** rules the agent should see every session
+— code style, the language you're working in, what to grep for first.
+That context is paid for on every prompt.
+
+Use `lore` for **just-in-time** context that's only relevant sometimes:
+repo conventions, service gotchas, incident lessons, migration rules,
+security decisions, cross-repo knowledge. The agent calls `search_lore`
+only when the task warrants it and gets a compact summary back. Full
+body only on demand via `get_lore`. That's the token-saving contract.
+
+If a rule applies to every session, it belongs in `CLAUDE.md`. If it
+applies only when you're touching `payments-svc`, it belongs in `lore`.
+
 ## Trust model
 
 Every record carries lifecycle + provenance metadata so retrieval is honest:
@@ -181,6 +196,19 @@ profiles.
 ## Security
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-FLOW.md).
+
+**`lore` protects against:**
+
+- Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; MCP `includeRestricted` env-gated).
+- Stale or unreviewed memory dominating retrieval (`stale: true` flag; lifecycle filtering; agent suggestions land as drafts).
+- Audit-log leakage of body content (sanitised pre-write; `lore audit` renders redacted by default).
+
+**`lore` does not protect against:**
+
+- A malicious local user with filesystem access. The DB is mode 0600 but anyone who can read it can read every record.
+- Secrets intentionally added to lore. Use a secrets manager; `restricted` is a retrieval guard, not a vault.
+- An LLM provider seeing content the agent has retrieved. That's the standard trust boundary you already accept for any AI tool use.
+- Compromise of the MCP client or shell environment.
 
 Short version:
 
