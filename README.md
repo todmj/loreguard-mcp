@@ -185,7 +185,7 @@ See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-F
 Short version:
 
 - The server uses stdio transport only. No network listener, ever.
-- The server has zero outbound HTTP. Audit `package.json` to verify.
+- The `lore` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs.
 - The DB file is local, mode 0600, in your home directory.
 - Audit log at `~/.lore/audit.jsonl`: every **MCP tool call** timestamped (with request args and result IDs, never result bodies). CLI mutations are recorded separately in the SQLite `events` table (`created`, `suggested`, `approved`, `deprecated`, `superseded`, `verified`, `updated`, `deleted`) keyed by lore id.
 

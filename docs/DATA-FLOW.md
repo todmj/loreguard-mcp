@@ -29,8 +29,12 @@ What crosses each boundary:
   never emits audit lines as tool results.
 - The DB file is never read by the MCP server other than through SQL
   queries — there's no "dump the whole table" tool.
-- The server makes no outbound HTTP calls. `package.json` deliberately
-  has no `axios` / `node-fetch` / telemetry SDKs. Audit it.
+- The `lore` application code makes no outbound HTTP calls. `package.json`
+  deliberately has no `axios` / `node-fetch` / telemetry SDKs. The
+  `@modelcontextprotocol/sdk` dependency does include unused HTTP/client
+  modules; `lore` does not import or configure them. For defence in depth,
+  an OS-level egress block on the binary (Little Snitch / nftables) closes
+  the gap regardless of dep-tree contents.
 
 ## What does leave your machine
 
