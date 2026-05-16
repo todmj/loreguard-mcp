@@ -834,6 +834,91 @@ describe("core/lore", () => {
     });
   });
 
+  describe("searchLore ranking — column weights + prefix + multi-tag", () => {
+    /**
+     * The column weights (title=3, summary=2, body=1) mean a hit in the
+     * title outranks a hit in the body all else equal. Exercise with two
+     * records that swap which column contains the query term.
+     */
+    it("ranks title hits above body hits for the same query", () => {
+      const titleHit = addLore(db, {
+        title: "Argon2id is the password hash default",
+        summary: "Platform sec ruling.",
+        body: "Use m=64MB.",
+      });
+      addLore(db, {
+        title: "Migration style guide",
+        summary: "Liquibase format.",
+        body: "We migrated from bcrypt to argon2id last year.",
+      });
+      const hits = searchLore(db, { query: "argon2id" });
+      expect(hits.length).toBeGreaterThanOrEqual(2);
+      expect(hits[0]!.id).toBe(titleHit.id);
+    });
+
+    it("prefix mode matches tokens of 3+ chars as prefixes", () => {
+      addLore(db, {
+        title: "API dates must include timezone offsets",
+        summary: "s",
+        body: "b",
+      });
+      // Exact-match mode should not find 'timez' (no such token).
+      expect(searchLore(db, { query: "timez" })).toHaveLength(0);
+      // Prefix mode should.
+      expect(
+        searchLore(db, { query: "timez", prefix: true }).length,
+      ).toBeGreaterThan(0);
+    });
+
+    it("prefix mode leaves <3-char tokens as exact-match (no slow 1-char prefix)", () => {
+      addLore(db, {
+        title: "AB convention example",
+        summary: "s",
+        body: "b",
+      });
+      // 'ab' is 2 chars — still exact, hits the record.
+      const exact = searchLore(db, { query: "ab", prefix: true });
+      expect(exact.length).toBeGreaterThan(0);
+    });
+
+    it("tag accepts a string array — ANY-of semantics", () => {
+      const a = addLore(db, {
+        title: "auth ruling",
+        summary: "s",
+        body: "b",
+        tags: ["security"],
+      });
+      const b = addLore(db, {
+        title: "db ruling",
+        summary: "s",
+        body: "b",
+        tags: ["db"],
+      });
+      const c = addLore(db, {
+        title: "frontend ruling",
+        summary: "s",
+        body: "b",
+        tags: ["frontend"],
+      });
+      const hits = searchLore(db, { tag: ["security", "db"] });
+      const ids = hits.map((h) => h.id);
+      expect(ids).toContain(a.id);
+      expect(ids).toContain(b.id);
+      expect(ids).not.toContain(c.id);
+    });
+
+    it("single-tag string still works (back-compat)", () => {
+      addLore(db, {
+        title: "x",
+        summary: "s",
+        body: "b",
+        tags: ["security"],
+      });
+      const hits = searchLore(db, { tag: "security" });
+      expect(hits.length).toBe(1);
+    });
+  });
+
   describe("conflict surfacing in searchLore", () => {
     /**
      * Two active records sharing a repo and a tag are flagged in each

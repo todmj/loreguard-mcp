@@ -50,10 +50,11 @@ COMMANDS
   suggest                   Same as add but lands as a draft. Used by agents;
                             also handy when you want to triage later.
   search <query...>         Full-text search. Returns brief summaries.
-                            Flags: --repo, --tag, --updated-after,
-                            --include-drafts, --include-deprecated,
-                            --include-superseded, --include-restricted,
-                            --limit
+                            Flags: --repo, --tag (repeatable for ANY-of),
+                            --prefix (match tokens of 3+ chars as
+                            prefixes), --updated-after, --include-drafts,
+                            --include-deprecated, --include-superseded,
+                            --include-restricted, --limit
   show <id>                 Print the full record (body included).
   list                      Recent records across all lifecycle states.
   review [--list]           Interactive triage queue: show each pending
@@ -218,7 +219,10 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
 async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const query = args.positionals.join(" ").trim() || undefined;
   const repo = getString(args.flags, "repo");
-  const tag = getString(args.flags, "tag");
+  // --tag is repeatable: multiple --tag values become an ANY-of filter.
+  const tagList = getStringArray(args.flags, "tag");
+  const tag: string | string[] | undefined =
+    tagList.length === 0 ? undefined : tagList.length === 1 ? tagList[0] : tagList;
   // Accept either spelling; `--updated-after` is canonical, `--since` is kept
   // as a friendly alias.
   const updatedAfter =
@@ -228,12 +232,14 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const includeDeprecated = getBool(args.flags, "include-deprecated");
   const includeSuperseded = getBool(args.flags, "include-superseded");
   const includeRestricted = getBool(args.flags, "include-restricted");
+  const prefix = getBool(args.flags, "prefix");
   const db = openDb();
   try {
     const hits = searchLore(db, {
       query,
       repo,
       tag,
+      prefix,
       updatedAfter,
       limit,
       includeDrafts,
