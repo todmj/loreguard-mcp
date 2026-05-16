@@ -91,7 +91,7 @@ export interface SearchOptions {
   readonly repo?: string;
   readonly tag?: string;
   /** ISO timestamp; only lore updated on/after this is returned. */
-  readonly since?: string;
+  readonly updatedAfter?: string;
   /** Default false. */
   readonly includeRestricted?: boolean;
   /** Default false; agents shouldn't see unreviewed material by default. */

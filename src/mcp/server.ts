@@ -111,10 +111,16 @@ export async function runMcpServer(): Promise<void> {
           query: args.query,
           repo: args.repo,
           tag: args.tag,
-          since: args.updatedAfter,
+          updatedAfter: args.updatedAfter,
           includeDrafts: args.includeDrafts,
           includeDeprecated: args.includeDeprecated,
-          includeRestricted: args.includeRestricted,
+          // R4 — env-gated. The agent can ASK for restricted records, but
+          // the server ignores the flag unless LORE_ALLOW_RESTRICTED_MCP=1
+          // is set at startup. Belt-and-braces beyond the schema default.
+          includeRestricted:
+            process.env["LORE_ALLOW_RESTRICTED_MCP"] === "1"
+              ? args.includeRestricted
+              : false,
           limit: args.limit,
         });
         audit({
@@ -260,6 +266,21 @@ export async function runMcpServer(): Promise<void> {
       },
     },
     async (args) => {
+      // Build a sanitised audit shape that DELIBERATELY omits the body
+      // (and summary length is bounded by the schema so it's safe to keep).
+      // This is the trust-model boundary called out in SECURITY.md — the
+      // audit log records that a suggestion happened, not the suggestion's
+      // contents. To inspect the content, read the SQLite `lore` row.
+      const sanitised = {
+        title: args.title,
+        summaryChars: args.summary.length,
+        bodyChars: args.body.length,
+        repos: args.repos,
+        tags: args.tags,
+        source: args.source,
+        confidence: args.confidence,
+        team: args.team,
+      };
       try {
         const lore = suggestLore(db, {
           title: args.title,
@@ -274,7 +295,7 @@ export async function runMcpServer(): Promise<void> {
         });
         audit({
           tool: "suggest_lore",
-          request: { ...(args as Record<string, unknown>), bodyChars: args.body.length },
+          request: sanitised,
           resultCount: 1,
           resultIds: [lore.id],
         });
@@ -300,7 +321,7 @@ export async function runMcpServer(): Promise<void> {
         const msg = err instanceof Error ? err.message : String(err);
         audit({
           tool: "suggest_lore",
-          request: args as Record<string, unknown>,
+          request: sanitised,
           error: msg,
         });
         return {

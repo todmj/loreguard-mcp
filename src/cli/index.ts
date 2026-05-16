@@ -36,8 +36,9 @@ COMMANDS
   suggest                   Same as add but lands as a draft. Used by agents;
                             also handy when you want to triage later.
   search <query...>         Full-text search. Returns brief summaries.
-                            Flags: --repo, --tag, --since, --include-drafts,
-                            --include-deprecated, --include-restricted, --limit
+                            Flags: --repo, --tag, --updated-after,
+                            --include-drafts, --include-deprecated,
+                            --include-restricted, --limit
   show <id>                 Print the full record (body included).
   list                      Recent records across all lifecycle states.
   review                    List pending drafts awaiting approval.
@@ -140,7 +141,10 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const query = args.positionals.join(" ").trim() || undefined;
   const repo = getString(args.flags, "repo");
   const tag = getString(args.flags, "tag");
-  const since = getString(args.flags, "since");
+  // Accept either spelling; `--updated-after` is canonical, `--since` is kept
+  // as a friendly alias.
+  const updatedAfter =
+    getString(args.flags, "updated-after") ?? getString(args.flags, "since");
   const limit = parseLimit(getString(args.flags, "limit")) ?? 10;
   const includeDrafts = getBool(args.flags, "include-drafts");
   const includeDeprecated = getBool(args.flags, "include-deprecated");
@@ -151,7 +155,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
       query,
       repo,
       tag,
-      since,
+      updatedAfter,
       limit,
       includeDrafts,
       includeDeprecated,
