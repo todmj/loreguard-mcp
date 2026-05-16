@@ -86,13 +86,14 @@ export interface LoreSummary {
   readonly score?: number;
   /**
    * IDs of other `active` records in the SAME search response that share
-   * at least one repo AND at least one tag with this one — i.e. plausible
-   * conflicting authorities. Populated by `searchLore` after the result
-   * set is assembled; intentionally scoped to the current response so the
-   * agent / reviewer sees the contradiction without an extra round trip.
-   * Empty / omitted when nothing in the response qualifies.
+   * at least one repo AND at least one tag with this one — i.e. records
+   * that POSSIBLY conflict. This is an overlap heuristic, not contradiction
+   * detection: two records sharing scope might be complementary or might
+   * disagree, and a human / agent has to read both to know. Populated by
+   * `searchLore` after the result set is assembled; intentionally scoped
+   * to the current response. Empty / omitted when nothing qualifies.
    */
-  readonly conflicts?: ReadonlyArray<string>;
+  readonly possibleConflicts?: ReadonlyArray<string>;
 }
 
 export interface SearchOptions {

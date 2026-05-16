@@ -27,7 +27,8 @@ What's NOT in scope:
   cryptographic barrier. Anyone with read access to the DB file can
   read every record. Don't store secrets in `lore`.
 - Multi-user authentication. The DB file is a single-user local store.
-  Team sync is out of scope for v0.1 (see ROADMAP / future).
+  Team sync via `lore sync export/import` is git-mediated: the trust
+  gate is your PR review, not a server-side auth layer.
 
 ## Defaults
 
