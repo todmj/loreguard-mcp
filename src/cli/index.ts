@@ -21,7 +21,9 @@ import {
   verifyLore,
 } from "../core/lore.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
+import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
+import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
 
 const HELP = `lore — local memory for AI coding agents
@@ -57,6 +59,14 @@ COMMANDS
   tags                      Print all distinct tags.
   repos                     Print all distinct repos.
   audit [--n=N]             Print the last N audit log lines (default 20).
+  doctor                    Health-check the local install: DB exists,
+                            permissions, FTS index, audit log, restricted
+                            MCP gate, version. Exits non-zero on hard
+                            failures, zero on warnings.
+  print-claude-instructions
+                            Print the retrieval rule to paste into
+                            your CLAUDE.md / agent instructions so the
+                            agent reliably calls search_lore.
   mcp                       Run the MCP server on stdio (same as lore-mcp).
 
 EXAMPLES
@@ -428,6 +438,12 @@ async function cmdRepos(): Promise<number> {
   }
 }
 
+async function cmdDoctor(): Promise<number> {
+  const { exitCode, checks } = runDoctor();
+  process.stdout.write(renderDoctor(checks) + "\n");
+  return exitCode;
+}
+
 async function cmdAudit(args: ReturnType<typeof parseArgs>): Promise<number> {
   const path =
     process.env["LORE_AUDIT_LOG"] ?? join(homedir(), ".lore", "audit.jsonl");
@@ -490,6 +506,12 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdRepos();
       case "audit":
         return await cmdAudit(parsed);
+      case "doctor":
+        return await cmdDoctor();
+      case "print-claude-instructions":
+      case "instructions":
+        process.stdout.write(renderClaudeInstructions());
+        return 0;
       case "mcp":
         {
           const { runMcpServer } = await import("../mcp/server.js");
