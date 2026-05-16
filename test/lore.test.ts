@@ -14,6 +14,7 @@ import {
   searchLore,
   supersedeLore,
   suggestLore,
+  updateLore,
   verifyLore,
 } from "../src/core/lore.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -298,6 +299,19 @@ describe("core/lore", () => {
       const a = addLore(db, { title: "X", summary: "s", body: "b" });
       expect(supersedeLore(db, a.id, a.id)).toBeNull();
     });
+    it("rejects supersede with a non-existent replacement id", () => {
+      const a = addLore(db, { title: "X", summary: "s", body: "b" });
+      expect(supersedeLore(db, a.id, "nope1234")).toBeNull();
+      // Original record should be untouched (still active).
+      expect(getLore(db, a.id)?.status).toBe("active");
+    });
+    it("rejects supersede when replacement is already deprecated / superseded", () => {
+      const a = addLore(db, { title: "A", summary: "s", body: "b" });
+      const b = addLore(db, { title: "B", summary: "s", body: "b" });
+      deprecateLore(db, b.id);
+      expect(supersedeLore(db, a.id, b.id)).toBeNull();
+      expect(getLore(db, a.id)?.status).toBe("active");
+    });
     it("emits a 'superseded' event with the target id in payload", () => {
       const a = addLore(db, { title: "Old", summary: "s", body: "b" });
       const b = addLore(db, { title: "New", summary: "s", body: "b" });
@@ -326,6 +340,37 @@ describe("core/lore", () => {
       ).map((e) => e.kind);
       expect(kinds).toContain("verified");
     });
+
+    it("verifyLore clears staleness by pushing review_after forward when lapsed", () => {
+      const lore = addLore(db, {
+        title: "old rule",
+        summary: "s",
+        body: "b",
+        reviewAfter: "2020-01-01",
+      });
+      const before = searchLore(db, { query: "old rule" })[0];
+      expect(before?.stale).toBe(true);
+      const verified = verifyLore(db, lore.id);
+      // Default forward push gives us a future date.
+      expect(verified?.reviewAfter).toBeDefined();
+      expect(Date.parse(verified!.reviewAfter!)).toBeGreaterThan(Date.now());
+      const after = searchLore(db, { query: "old rule" })[0];
+      expect(after?.stale).toBe(false);
+    });
+
+    it("verifyLore accepts an explicit nextReviewAfter override", () => {
+      const lore = addLore(db, { title: "x", summary: "s", body: "b" });
+      const verified = verifyLore(db, lore.id, "2099-12-31");
+      expect(verified?.reviewAfter).toBe("2099-12-31");
+    });
+
+    it("verifyLore rejects an invalid nextReviewAfter", () => {
+      const lore = addLore(db, { title: "x", summary: "s", body: "b" });
+      expect(() => verifyLore(db, lore.id, "garbage")).toThrow(
+        /nextReviewAfter/,
+      );
+    });
+
     it("deleteLore cascades repos + tags + removes from FTS", () => {
       const lore = addLore(db, {
         title: "t",
@@ -347,6 +392,89 @@ describe("core/lore", () => {
           .all(lore.id),
       ).toEqual([]);
       expect(searchLore(db, { query: lore.title })).toEqual([]);
+    });
+  });
+
+  describe("updateLore", () => {
+    it("partial-updates only the fields provided", () => {
+      const a = addLore(db, {
+        title: "Original",
+        summary: "old summary",
+        body: "old body",
+        repos: ["one"],
+        tags: ["old-tag"],
+      });
+      const updated = updateLore(db, a.id, {
+        summary: "new summary",
+        tags: ["new-tag", "another"],
+      });
+      expect(updated?.title).toBe("Original");
+      expect(updated?.summary).toBe("new summary");
+      expect(updated?.body).toBe("old body");
+      // Tags replaced (not merged).
+      expect(updated?.tags).toEqual(["another", "new-tag"]);
+      // Repos untouched.
+      expect(updated?.repos).toEqual(["one"]);
+    });
+
+    it("reindexes FTS when title/summary/body changes", () => {
+      const a = addLore(db, {
+        title: "Aardvark policy",
+        summary: "s",
+        body: "b",
+      });
+      expect(searchLore(db, { query: "Aardvark" })).toHaveLength(1);
+      updateLore(db, a.id, { title: "Buffalo policy" });
+      expect(searchLore(db, { query: "Aardvark" })).toEqual([]);
+      expect(searchLore(db, { query: "Buffalo" })).toHaveLength(1);
+    });
+
+    it("emits an 'updated' event", () => {
+      const a = addLore(db, { title: "t", summary: "s", body: "b" });
+      updateLore(db, a.id, { summary: "new" });
+      const kinds = (
+        db
+          .prepare("SELECT kind FROM events WHERE lore_id = ? ORDER BY rowid")
+          .all(a.id) as Array<{ kind: string }>
+      ).map((e) => e.kind);
+      expect(kinds).toContain("updated");
+    });
+
+    it("re-clamps confidence on update (sourceless → high downgraded)", () => {
+      const a = addLore(db, {
+        title: "t",
+        summary: "s",
+        body: "b",
+        source: "https://x.example",
+        confidence: "high",
+      });
+      expect(a.confidence).toBe("high");
+      // Remove the source — confidence should fall.
+      const updated = updateLore(db, a.id, { source: "" });
+      expect(updated?.confidence).toBe("medium");
+    });
+
+    it("returns null for unknown id", () => {
+      expect(updateLore(db, "ghost", { title: "x" })).toBeNull();
+    });
+  });
+
+  describe("reviewAfter date validation", () => {
+    it("addLore rejects an invalid ISO date for reviewAfter", () => {
+      expect(() =>
+        addLore(db, {
+          title: "t",
+          summary: "s",
+          body: "b",
+          reviewAfter: "not-a-date",
+        }),
+      ).toThrow(/reviewAfter/);
+    });
+    it("updateLore rejects an invalid ISO date for reviewAfter", () => {
+      const a = addLore(db, { title: "t", summary: "s", body: "b" });
+      expect(() =>
+        updateLore(db, a.id, { reviewAfter: "garbage" }),
+      ).toThrow(/reviewAfter/);
     });
   });
 

@@ -8,6 +8,7 @@ import type {
   LoreStatus,
   LoreSummary,
   SearchOptions,
+  UpdateLoreInput,
 } from "../db/types.js";
 import { newIdeaId as newLoreId } from "./ids.js";
 
@@ -25,8 +26,30 @@ function normaliseRepo(r: string): string {
 
 function isStale(reviewAfter: string | null): boolean {
   if (!reviewAfter) return false;
-  return new Date(reviewAfter).getTime() < Date.now();
+  const t = Date.parse(reviewAfter);
+  if (Number.isNaN(t)) return false;
+  return t < Date.now();
 }
+
+/**
+ * Validate ISO-8601 date strings at write boundaries. Catches the
+ * "new Date('nonsense').getTime() === NaN" footgun that previously
+ * disabled staleness silently.
+ */
+function assertIsoDate(value: string | undefined, field: string): void {
+  if (value === undefined) return;
+  const t = Date.parse(value);
+  if (Number.isNaN(t)) {
+    throw new Error(`${field}: '${value}' is not a valid ISO-8601 date`);
+  }
+}
+
+/**
+ * R20 — when verifyLore runs on a record whose review_after has lapsed,
+ * push the date this many days forward so the record is no longer
+ * flagged stale. Callers can pass a custom date to override.
+ */
+const VERIFY_DEFAULT_FORWARD_DAYS = 90;
 
 function rowToLore(row: LoreRow, repos: string[], tags: string[]): Lore {
   return {
@@ -131,6 +154,7 @@ function insertLore(
     new Set((input.tags ?? []).map(normaliseTag).filter(Boolean)),
   ).sort();
   const confidence = clampConfidence(input.confidence, !!input.source, status);
+  assertIsoDate(input.reviewAfter, "reviewAfter");
   const tx = db.transaction(() => {
     const info = db
       .prepare(
@@ -238,6 +262,11 @@ export function deprecateLore(db: Database, id: string): Lore | null {
 /**
  * Mark `oldId` as superseded by `newId`. Old record → status='superseded'
  * + supersededBy=newId. New record is left as-is (typically already active).
+ *
+ * Validates: oldId exists, newId exists, oldId !== newId, and newId
+ * itself is not a tombstone (deprecated / superseded). Returns null
+ * on any failure rather than throwing — the CLI surfaces a single
+ * explanatory message rather than an unhandled error.
  */
 export function supersedeLore(
   db: Database,
@@ -245,6 +274,13 @@ export function supersedeLore(
   newId: string,
 ): Lore | null {
   if (oldId === newId) return null;
+  const replacement = db
+    .prepare("SELECT id, status FROM lore WHERE id = ?")
+    .get(newId) as { id: string; status: LoreStatus } | undefined;
+  if (!replacement) return null;
+  if (replacement.status === "deprecated" || replacement.status === "superseded") {
+    return null;
+  }
   const ts = nowIso();
   const r = db
     .prepare(
@@ -258,18 +294,164 @@ export function supersedeLore(
   return getLore(db, oldId);
 }
 
-/** Bump `last_verified_at`. Records that the lore still applies as of now. */
-export function verifyLore(db: Database, id: string): Lore | null {
+/**
+ * Bump `last_verified_at` AND, if `review_after` has lapsed, push it
+ * VERIFY_DEFAULT_FORWARD_DAYS days into the future so the record clears
+ * the `stale: true` flag. Callers can override by passing an explicit
+ * `nextReviewAfter`. Pass `null` to leave `review_after` untouched even
+ * if it's lapsed (rare, but useful for "yes I checked, the warning is
+ * still right" cases).
+ */
+export function verifyLore(
+  db: Database,
+  id: string,
+  nextReviewAfter?: string | null,
+): Lore | null {
+  const current = db
+    .prepare(
+      "SELECT review_after FROM lore WHERE id = ?",
+    )
+    .get(id) as { review_after: string | null } | undefined;
+  if (!current) return null;
+
   const ts = nowIso();
+  let newReview: string | null = current.review_after;
+  if (nextReviewAfter === null) {
+    // Explicit "leave alone" — keep whatever's there.
+    newReview = current.review_after;
+  } else if (typeof nextReviewAfter === "string") {
+    assertIsoDate(nextReviewAfter, "nextReviewAfter");
+    newReview = nextReviewAfter;
+  } else if (isStale(current.review_after)) {
+    // Default: lapsed → forward N days. Fresh review_after is left alone.
+    const forward = new Date(Date.now() + VERIFY_DEFAULT_FORWARD_DAYS * 86_400_000);
+    newReview = forward.toISOString();
+  }
+
   const r = db
     .prepare(
-      "UPDATE lore SET last_verified_at = ?, updated_at = ? WHERE id = ?",
+      "UPDATE lore SET last_verified_at = ?, review_after = ?, updated_at = ? WHERE id = ?",
     )
-    .run(ts, ts, id);
+    .run(ts, newReview, ts, id);
   if (r.changes === 0) return null;
   db.prepare(
-    "INSERT INTO events (lore_id, kind, ts) VALUES (?, 'verified', ?)",
-  ).run(id, ts);
+    "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'verified', ?, ?)",
+  ).run(id, ts, JSON.stringify({ reviewAfter: newReview }));
+  return getLore(db, id);
+}
+
+/**
+ * Partial update — title / summary / body / metadata. Use for fixing
+ * an agent's draft text before approval, or correcting an active
+ * record. Status transitions go through approve/deprecate/supersede,
+ * not this. Tags and repos when present REPLACE the existing set.
+ *
+ * Confidence invariants still apply: clampConfidence enforces the
+ * "agent draft can't claim high" / "sourceless can't be high" rules
+ * even via update (status comes from the current row).
+ */
+export function updateLore(
+  db: Database,
+  id: string,
+  input: UpdateLoreInput,
+): Lore | null {
+  const current = db.prepare("SELECT * FROM lore WHERE id = ?").get(id) as
+    | LoreRow
+    | undefined;
+  if (!current) return null;
+
+  assertIsoDate(
+    input.reviewAfter === null ? undefined : input.reviewAfter,
+    "reviewAfter",
+  );
+
+  // Resolve final values, falling back to current row when not provided.
+  const title = input.title ?? current.title;
+  const summary = input.summary ?? current.summary;
+  const body = input.body ?? current.body;
+  const author = input.author !== undefined ? input.author : current.author;
+  const team = input.team !== undefined ? input.team : current.team;
+  const source = input.source !== undefined ? input.source : current.source;
+  const reviewAfter =
+    input.reviewAfter === null
+      ? null
+      : input.reviewAfter !== undefined
+        ? input.reviewAfter
+        : current.review_after;
+  const restricted =
+    input.restricted !== undefined ? (input.restricted ? 1 : 0) : current.restricted;
+  // Confidence: caller's claim, but re-clamped given (possibly new) source + current status.
+  const confidence = clampConfidence(
+    input.confidence ?? current.confidence,
+    !!source,
+    current.status,
+  );
+
+  const ts = nowIso();
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE lore SET
+        title = ?, summary = ?, body = ?,
+        author = ?, team = ?, source = ?,
+        review_after = ?, confidence = ?, restricted = ?,
+        updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      title,
+      summary,
+      body,
+      author,
+      team,
+      source,
+      reviewAfter,
+      confidence,
+      restricted,
+      ts,
+      id,
+    );
+    // If any of title/summary/body changed, reindex FTS for this row.
+    if (
+      input.title !== undefined ||
+      input.summary !== undefined ||
+      input.body !== undefined
+    ) {
+      // Need the rowid for FTS — fetch via a join since `lore.id` is a
+      // separate string id from the implicit rowid.
+      const rowid = (
+        db.prepare("SELECT rowid FROM lore WHERE id = ?").get(id) as {
+          rowid: number;
+        }
+      ).rowid;
+      db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(rowid);
+      db.prepare(
+        "INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)",
+      ).run(rowid, title, summary, body);
+    }
+    if (input.repos !== undefined) {
+      const repos = Array.from(
+        new Set(input.repos.map(normaliseRepo).filter(Boolean)),
+      ).sort();
+      db.prepare("DELETE FROM lore_repos WHERE lore_id = ?").run(id);
+      const ins = db.prepare(
+        "INSERT INTO lore_repos (lore_id, repo) VALUES (?, ?)",
+      );
+      for (const r of repos) ins.run(id, r);
+    }
+    if (input.tags !== undefined) {
+      const tags = Array.from(
+        new Set(input.tags.map(normaliseTag).filter(Boolean)),
+      ).sort();
+      db.prepare("DELETE FROM lore_tags WHERE lore_id = ?").run(id);
+      const ins = db.prepare(
+        "INSERT INTO lore_tags (lore_id, tag) VALUES (?, ?)",
+      );
+      for (const t of tags) ins.run(id, t);
+    }
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts) VALUES (?, 'updated', ?)",
+    ).run(id, ts);
+  });
+  tx();
   return getLore(db, id);
 }
 

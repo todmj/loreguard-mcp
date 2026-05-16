@@ -1,15 +1,19 @@
 {
   "name": "lore-mcp",
   "version": "0.1.0",
-  "description": "Cross-repo team knowledge for AI agents. MCP server + CLI backed by local SQLite.",
+  "description": "Just-in-time local memory for AI coding agents. SQLite-backed MCP server and CLI for trusted, searchable, repo-scoped context.",
   "keywords": [
     "mcp",
     "model-context-protocol",
     "claude",
-    "knowledge-base",
-    "team-memory",
-    "ideas",
-    "cross-repo"
+    "claude-code",
+    "cursor",
+    "ai-agents",
+    "coding-agents",
+    "agent-memory",
+    "local-memory",
+    "sqlite",
+    "developer-tools"
   ],
   "license": "MIT",
   "author": "tmj <tommj_723@yahoo.co.uk>",

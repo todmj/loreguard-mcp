@@ -161,7 +161,7 @@ Short version:
 - The server uses stdio transport only. No network listener, ever.
 - The server has zero outbound HTTP. Audit `package.json` to verify.
 - The DB file is local, mode 0600, in your home directory.
-- Audit log at `~/.lore/audit.jsonl`: every tool call timestamped.
+- Audit log at `~/.lore/audit.jsonl`: every **MCP tool call** timestamped (with request args and result IDs, never result bodies). CLI mutations are recorded separately in the SQLite `events` table (`created`, `suggested`, `approved`, `deprecated`, `superseded`, `verified`, `updated`, `deleted`) keyed by lore id.
 
 Data does leave your machine the moment Claude reads a tool result — it goes
 to your LLM provider as part of the next prompt. That's the standard trust
