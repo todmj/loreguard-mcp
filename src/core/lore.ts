@@ -235,6 +235,175 @@ export function addLore(db: Database, input: AddLoreInput): Lore {
 }
 
 /**
+ * Shape used by `lore sync import`: a full Lore record reconstructed
+ * from a Markdown file's frontmatter. Differs from AddLoreInput in
+ * three ways:
+ *
+ *   - `id` is REQUIRED — the .md file's id is the round-trip key. We
+ *     never allocate a new id during import.
+ *   - `status` is REQUIRED and authoritative. The PR review is the
+ *     trust gate; whatever the file says wins.
+ *   - `createdAt` / `updatedAt` are optional but, when present,
+ *     preserved (so two exports of the same DB diff cleanly).
+ *
+ * Confidence is still clamped (no `high` without a source) — that's a
+ * core invariant, not a stylistic choice.
+ */
+export interface ImportLoreInput {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly body: string;
+  readonly status: LoreStatus;
+  readonly author?: string;
+  readonly team?: string;
+  readonly source?: string;
+  readonly reviewAfter?: string;
+  readonly confidence?: LoreConfidence;
+  readonly repos?: ReadonlyArray<string>;
+  readonly tags?: ReadonlyArray<string>;
+  readonly restricted?: boolean;
+  readonly supersededBy?: string;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+  readonly lastVerifiedAt?: string;
+}
+
+export interface ImportResult {
+  readonly id: string;
+  readonly created: boolean;
+}
+
+/**
+ * Upsert a single record by id, used by `lore sync import`. Creates
+ * a new row when the id is unknown; otherwise updates every field
+ * (status included — unlike `updateLore`, which deliberately refuses
+ * status changes because the interactive paths go through
+ * approve/deprecate/supersede). The PR is the lifecycle gate for sync,
+ * so `import` is the one place we let status move freely.
+ *
+ * Confidence still clamps via `clampConfidence` (no `high` without a
+ * source; no `high` on a draft). FTS is reindexed. The events row uses
+ * `imported` so the audit trail distinguishes sync from interactive
+ * authorship.
+ */
+export function upsertLoreFromImport(
+  db: Database,
+  input: ImportLoreInput,
+): ImportResult {
+  assertIsoDate(input.reviewAfter, "reviewAfter");
+  assertIsoDate(input.createdAt, "createdAt");
+  assertIsoDate(input.updatedAt, "updatedAt");
+  assertIsoDate(input.lastVerifiedAt, "lastVerifiedAt");
+  assertHttpUrl(input.source, "source");
+
+  const repos = Array.from(
+    new Set((input.repos ?? []).map(normaliseRepo).filter(Boolean)),
+  ).sort();
+  const tags = Array.from(
+    new Set((input.tags ?? []).map(normaliseTag).filter(Boolean)),
+  ).sort();
+  const confidence = clampConfidence(
+    input.confidence,
+    !!input.source,
+    input.status,
+  );
+  const nowTs = nowIso();
+  const createdAt = input.createdAt ?? nowTs;
+  const updatedAt = input.updatedAt ?? nowTs;
+
+  const existing = db
+    .prepare("SELECT rowid FROM lore WHERE id = ?")
+    .get(input.id) as { rowid: number } | undefined;
+  const isCreate = !existing;
+
+  const tx = db.transaction(() => {
+    if (isCreate) {
+      const info = db
+        .prepare(
+          `INSERT INTO lore (
+            id, title, summary, body, author, team,
+            status, source, review_after, confidence,
+            superseded_by, restricted,
+            created_at, updated_at, last_verified_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.id,
+          input.title,
+          input.summary,
+          input.body,
+          input.author ?? null,
+          input.team ?? null,
+          input.status,
+          input.source ?? null,
+          input.reviewAfter ?? null,
+          confidence,
+          input.supersededBy ?? null,
+          input.restricted ? 1 : 0,
+          createdAt,
+          updatedAt,
+          input.lastVerifiedAt ?? null,
+        );
+      const rowid = Number(info.lastInsertRowid);
+      db.prepare(
+        "INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)",
+      ).run(rowid, input.title, input.summary, input.body);
+    } else {
+      db.prepare(
+        `UPDATE lore SET
+           title = ?, summary = ?, body = ?,
+           author = ?, team = ?, status = ?,
+           source = ?, review_after = ?, confidence = ?,
+           superseded_by = ?, restricted = ?,
+           updated_at = ?, last_verified_at = ?
+         WHERE id = ?`,
+      ).run(
+        input.title,
+        input.summary,
+        input.body,
+        input.author ?? null,
+        input.team ?? null,
+        input.status,
+        input.source ?? null,
+        input.reviewAfter ?? null,
+        confidence,
+        input.supersededBy ?? null,
+        input.restricted ? 1 : 0,
+        updatedAt,
+        input.lastVerifiedAt ?? null,
+        input.id,
+      );
+      const rowid = (
+        db.prepare("SELECT rowid FROM lore WHERE id = ?").get(input.id) as {
+          rowid: number;
+        }
+      ).rowid;
+      db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(rowid);
+      db.prepare(
+        "INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)",
+      ).run(rowid, input.title, input.summary, input.body);
+    }
+    // Replace repos + tags atomically.
+    db.prepare("DELETE FROM lore_repos WHERE lore_id = ?").run(input.id);
+    const repoIns = db.prepare(
+      "INSERT INTO lore_repos (lore_id, repo) VALUES (?, ?)",
+    );
+    for (const r of repos) repoIns.run(input.id, r);
+    db.prepare("DELETE FROM lore_tags WHERE lore_id = ?").run(input.id);
+    const tagIns = db.prepare(
+      "INSERT INTO lore_tags (lore_id, tag) VALUES (?, ?)",
+    );
+    for (const t of tags) tagIns.run(input.id, t);
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts) VALUES (?, 'imported', ?)",
+    ).run(input.id, nowTs);
+  });
+  tx();
+  return { id: input.id, created: isCreate };
+}
+
+/**
  * Agent-authored entry. Always lands as `status: 'draft'` — hidden from
  * default search until a human runs `lore approve <id>`. This is the
  * tool the MCP server exposes; agents cannot promote their own records.

@@ -37,6 +37,7 @@ import {
 } from "./induct.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
+import { exportToDir, importFromDir } from "./sync.js";
 
 const HELP = `lore — local memory for AI coding agents
 
@@ -87,6 +88,15 @@ COMMANDS
                             Opt-ins: --include-drafts,
                             --include-deprecated, --include-superseded,
                             --include-restricted.
+  sync export <dir>         Write one .md file per record into <dir>
+                            (e.g. .lore/) — PR-reviewable team lore.
+                            Active + non-restricted by default; same
+                            --include-* opt-ins as \`export\`.
+  sync import <dir>         Read every *.md file in <dir> and upsert
+                            into the local DB. Restricted records are
+                            skipped unless --include-restricted is set.
+                            Imports respect the file's declared status
+                            (the PR is the review gate).
   audit [--n=N] [--raw]     Print the last N audit log lines (default 20)
                             in a redacted human-readable form. Use --raw
                             to see the full JSON instead.
@@ -636,6 +646,64 @@ async function cmdRepos(): Promise<number> {
   }
 }
 
+async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  const dir = args.positionals[1];
+  if (sub !== "export" && sub !== "import") {
+    process.stderr.write(
+      "lore: sync requires a subcommand — `lore sync export <dir>` or `lore sync import <dir>`\n",
+    );
+    return 2;
+  }
+  if (!dir) {
+    process.stderr.write(`lore: sync ${sub} requires a directory path\n`);
+    return 2;
+  }
+  const includeDrafts = getBool(args.flags, "include-drafts");
+  const includeDeprecated = getBool(args.flags, "include-deprecated");
+  const includeSuperseded = getBool(args.flags, "include-superseded");
+  const includeRestricted = getBool(args.flags, "include-restricted");
+  const db = openDb();
+  try {
+    if (sub === "export") {
+      const r = exportToDir(db, dir, {
+        includeDrafts,
+        includeDeprecated,
+        includeSuperseded,
+        includeRestricted,
+      });
+      process.stdout.write(
+        `lore: wrote ${r.written.length} record(s) to ${dir}\n`,
+      );
+      if (r.excluded.restricted > 0) {
+        process.stdout.write(
+          `  ${r.excluded.restricted} restricted record(s) held back (pass --include-restricted to include)\n`,
+        );
+      }
+      if (r.excluded.drafts > 0) {
+        process.stdout.write(
+          `  ${r.excluded.drafts} draft(s) held back (pass --include-drafts to include)\n`,
+        );
+      }
+      return 0;
+    }
+    // import
+    const r = importFromDir(db, dir, { includeRestricted });
+    process.stdout.write(
+      `lore: imported ${r.created} new + ${r.updated} updated record(s) from ${dir}\n`,
+    );
+    if (r.skipped.length > 0) {
+      process.stdout.write(`  skipped ${r.skipped.length} file(s):\n`);
+      for (const s of r.skipped) {
+        process.stdout.write(`    ${s.file}: ${s.reason}\n`);
+      }
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
   const out = getString(args.flags, "out");
   const includeDrafts = getBool(args.flags, "include-drafts");
@@ -983,6 +1051,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdAudit(parsed);
       case "export":
         return await cmdExport(parsed);
+      case "sync":
+        return await cmdSync(parsed);
       case "demo":
         return await cmdDemo(parsed);
       case "induct":

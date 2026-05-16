@@ -372,18 +372,56 @@ LLM prompt — once retrieved, the content is in the agent's context.
 A single SQLite file at `~/.lore/lore.db` (mode `0600`). That's the entire
 storage layer.
 
-**For v0.1, SQLite is the source of truth.** Team sync is intentionally
-manual: back up or copy the DB yourself if you need it on another machine.
-Markdown import (PR-reviewable `.lore/*.md` files as canonical, SQLite as
-local index) is planned for v0.2 but not required for local use.
+**For v0.1, SQLite is the canonical source of truth.** Markdown files
+under `.lore/` are a *sync artifact*: PR-reviewable, committable to the
+repo, and round-trippable with `lore sync`, but the live record lives
+in SQLite. Drop one machine's DB and rebuild it by importing your
+team's `.lore/` directory.
 
 Override the path with `LORE_DB=/some/other.db` for tests or alternate
 profiles.
 
+### Team sync — Markdown round-trip
+
+`lore sync export <dir>` writes one `.md` file per record into `<dir>`
+(typically `.lore/` in the repo). `lore sync import <dir>` is the
+inverse — every file is upserted by id. Combined with normal git
+workflow, the PR review *is* the trust gate: a record in `.lore/` got
+there through code review.
+
+```bash
+lore sync export .lore               # active + non-restricted by default
+lore sync export .lore --include-deprecated --include-superseded
+lore sync import .lore               # upsert every .md back into SQLite
+lore sync import .lore --include-restricted
+```
+
+Each `.md` is YAML-frontmatter + Markdown body. Frontmatter is
+deterministic (fixed field order) so re-exporting a clean DB produces
+byte-identical files — your diffs stay tight.
+
+Defaults are conservative:
+
+- **Restricted records are excluded** from export by default. Committing
+  restricted titles to git is usually a mistake; if your repo is private
+  and you want the history, pass `--include-restricted`.
+- **Drafts are excluded** from export by default. They haven't been
+  reviewed yet; `lore review` is the gate, not `git push`.
+- **Imports respect the file's declared `status`.** If a `.md` says
+  `status: active`, it lands as active — the PR is the review gate.
+  Restricted-record files are skipped on import unless
+  `--include-restricted` is set.
+- Files without frontmatter, or missing required fields (`id`, `title`,
+  `summary`, `status`), are skipped with a reason — `lore sync import`
+  never crashes on a malformed file.
+
+`lore export --json` still exists for one-file JSON backup and
+inspection; `lore sync` is for the version-controlled team flow.
+
 ### Inspect / back up your lore
 
 `lore export` writes the DB as a single JSON document so you can read,
-diff, commit, or copy it without touching SQLite directly:
+diff, copy, or pipe it without touching SQLite directly:
 
 ```bash
 lore export                              # stdout, active + non-restricted
@@ -393,8 +431,7 @@ lore export --include-drafts --include-deprecated --include-superseded --include
 
 Envelope: `{ schemaVersion: 1, exportedAt, records: [Lore, ...] }`. Stable
 ordering by `updatedAt desc` with an `id asc` tiebreak — two exports of
-the same DB diff cleanly. Import is not implemented yet; for v0.1 the
-SQLite file remains the source of truth.
+the same DB diff cleanly.
 
 ## Security
 
