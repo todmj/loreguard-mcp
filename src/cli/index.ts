@@ -17,6 +17,7 @@ import {
   searchLore,
   supersedeLore,
   suggestLore,
+  updateLore,
   verifyLore,
 } from "../core/lore.js";
 import { getBool, getString, getStringArray, parseArgs } from "./args.js";
@@ -44,7 +45,13 @@ COMMANDS
   deprecate <id>            Mark deprecated.
   supersede <old-id> --with <new-id>
                             Mark <old-id> as superseded by <new-id>.
-  verify <id>               Bump last_verified_at on the record.
+  verify <id> [--review-after <iso-date>]
+                            Bump last_verified_at; if review-after has
+                            lapsed, push it 90 days forward (or use the
+                            value you pass with --review-after).
+  update <id> [--title ... --summary ... --body ... --source ... etc.]
+                            Edit fields on an existing record. Useful
+                            for fixing an agent's draft before approving.
   delete <id>               Hard-delete the record (events row preserved).
   tags                      Print all distinct tags.
   repos                     Print all distinct repos.
@@ -70,6 +77,15 @@ function parseConfidence(v: string | undefined): LoreConfidence | undefined {
   if (v === undefined) return undefined;
   if (v === "low" || v === "medium" || v === "high") return v;
   throw new Error(`invalid --confidence: ${v} (must be low | medium | high)`);
+}
+
+function parseLimit(v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 50) {
+    throw new Error(`invalid --limit: ${v} (must be an integer between 1 and 50)`);
+  }
+  return n;
 }
 
 async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Promise<number> {
@@ -125,7 +141,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const repo = getString(args.flags, "repo");
   const tag = getString(args.flags, "tag");
   const since = getString(args.flags, "since");
-  const limit = Number(getString(args.flags, "limit") ?? "10");
+  const limit = parseLimit(getString(args.flags, "limit")) ?? 10;
   const includeDrafts = getBool(args.flags, "include-drafts");
   const includeDeprecated = getBool(args.flags, "include-deprecated");
   const includeRestricted = getBool(args.flags, "include-restricted");
@@ -281,14 +297,77 @@ async function cmdVerify(args: ReturnType<typeof parseArgs>): Promise<number> {
     process.stderr.write("lore: verify <id> requires an id\n");
     return 2;
   }
+  const reviewAfter = getString(args.flags, "review-after");
   const db = openDb();
   try {
-    const lore = verifyLore(db, id);
+    const lore = verifyLore(db, id, reviewAfter);
     if (!lore) {
       process.stderr.write(`lore: no record with id ${id}\n`);
       return 1;
     }
-    process.stdout.write(`lore: verified ${lore.id} (at ${lore.lastVerifiedAt})\n`);
+    process.stdout.write(
+      `lore: verified ${lore.id}` +
+        ` (at ${lore.lastVerifiedAt}` +
+        (lore.reviewAfter ? `; next review ${lore.reviewAfter}` : "") +
+        `)\n`,
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdUpdate(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const id = args.positionals[0];
+  if (!id) {
+    process.stderr.write("lore: update <id> requires an id\n");
+    return 2;
+  }
+  const title = getString(args.flags, "title");
+  const summary = getString(args.flags, "summary");
+  const body = getString(args.flags, "body");
+  const source = getString(args.flags, "source");
+  const reviewAfter = getString(args.flags, "review-after");
+  const confidence = parseConfidence(getString(args.flags, "confidence"));
+  const team = getString(args.flags, "team");
+  const author = getString(args.flags, "author");
+  const reposFlag = getStringArray(args.flags, "repo");
+  const tagsFlag = getStringArray(args.flags, "tag");
+  const restricted = args.flags["restricted"] === true
+    ? true
+    : args.flags["unrestricted"] === true
+      ? false
+      : undefined;
+
+  // Build a tight partial-input — only include keys the user actually passed.
+  const patch: Record<string, unknown> = {};
+  if (title !== undefined) patch["title"] = title;
+  if (summary !== undefined) patch["summary"] = summary;
+  if (body !== undefined) patch["body"] = body;
+  if (source !== undefined) patch["source"] = source;
+  if (reviewAfter !== undefined) patch["reviewAfter"] = reviewAfter;
+  if (confidence !== undefined) patch["confidence"] = confidence;
+  if (team !== undefined) patch["team"] = team;
+  if (author !== undefined) patch["author"] = author;
+  if (reposFlag.length > 0) patch["repos"] = reposFlag;
+  if (tagsFlag.length > 0) patch["tags"] = tagsFlag;
+  if (restricted !== undefined) patch["restricted"] = restricted;
+
+  if (Object.keys(patch).length === 0) {
+    process.stderr.write(
+      "lore: update needs at least one field flag (--title, --summary, --body, --source, --review-after, --confidence, --team, --repo, --tag, --restricted/--unrestricted)\n",
+    );
+    return 2;
+  }
+
+  const db = openDb();
+  try {
+    const lore = updateLore(db, id, patch as Parameters<typeof updateLore>[2]);
+    if (!lore) {
+      process.stderr.write(`lore: no record with id ${id}\n`);
+      return 1;
+    }
+    process.stdout.write(`lore: updated ${lore.id}\n`);
     return 0;
   } finally {
     db.close();
@@ -396,6 +475,9 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdSupersede(parsed);
       case "verify":
         return await cmdVerify(parsed);
+      case "update":
+      case "edit":
+        return await cmdUpdate(parsed);
       case "delete":
         return await cmdDelete(parsed);
       case "tags":

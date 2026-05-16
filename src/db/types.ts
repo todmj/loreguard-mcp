@@ -121,3 +121,23 @@ export interface AddLoreInput {
   readonly tags?: ReadonlyArray<string>;
   readonly restricted?: boolean;
 }
+
+/**
+ * Partial-update shape for `updateLore`. Any field set is applied; tags
+ * and repos when set REPLACE the existing list (caller passes the full
+ * desired set). Status is intentionally NOT updatable here — use
+ * approveLore / deprecateLore / supersedeLore for lifecycle transitions.
+ */
+export interface UpdateLoreInput {
+  readonly title?: string;
+  readonly summary?: string;
+  readonly body?: string;
+  readonly author?: string;
+  readonly team?: string;
+  readonly source?: string;
+  readonly reviewAfter?: string | null;
+  readonly confidence?: LoreConfidence;
+  readonly repos?: ReadonlyArray<string>;
+  readonly tags?: ReadonlyArray<string>;
+  readonly restricted?: boolean;
+}
