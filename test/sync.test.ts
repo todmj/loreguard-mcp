@@ -10,7 +10,13 @@
  *   - status from frontmatter is authoritative on import (PR is the gate)
  */
 import BetterSqlite3 from "better-sqlite3";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -279,6 +285,44 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
     const result = importFromDir(db, dir);
     expect(result.created).toBe(1);
     expect(getLore(db, id)?.status).toBe("deprecated");
+  });
+
+  it("--clean removes stale <id>.md files in the target dir before writing", () => {
+    addLore(db, { title: "current", summary: "s", body: "B" });
+    // Place a stale lore-id-looking file in the dir; --clean should drop it.
+    const stale = join(dir, "abcd2345.md");
+    writeFileSync(stale, "---\nid: abcd2345\n---\nstale\n");
+    const result = exportToDir(db, dir, { clean: true });
+    expect(result.removed.map((p) => p.split("/").pop()).sort()).toContain(
+      "abcd2345.md",
+    );
+    // The stale file is gone; only the current record's .md remains.
+    const remaining = require("node:fs")
+      .readdirSync(dir)
+      .filter((f: string) => f.endsWith(".md"))
+      .sort();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).not.toBe("abcd2345.md");
+  });
+
+  it("--clean does NOT remove hand-written .md files (only 8-char id pattern)", () => {
+    addLore(db, { title: "current", summary: "s", body: "B" });
+    writeFileSync(join(dir, "CONTRIBUTING.md"), "# How to contribute\n");
+    writeFileSync(join(dir, "README.md"), "# Repo lore\n");
+    const result = exportToDir(db, dir, { clean: true });
+    expect(result.removed).toEqual([]);
+    const names = readdirSync(dir).sort();
+    expect(names).toContain("CONTRIBUTING.md");
+    expect(names).toContain("README.md");
+  });
+
+  it("without --clean, stale <id>.md files survive across exports", () => {
+    addLore(db, { title: "current", summary: "s", body: "B" });
+    writeFileSync(join(dir, "abcd2345.md"), "---\nid: abcd2345\n---\nstale\n");
+    const result = exportToDir(db, dir);
+    expect(result.removed).toEqual([]);
+    const names = readdirSync(dir);
+    expect(names).toContain("abcd2345.md");
   });
 
   it("skips files with missing required fields and lists each reason", () => {

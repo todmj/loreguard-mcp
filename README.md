@@ -392,6 +392,7 @@ there through code review.
 ```bash
 lore sync export .lore               # active + non-restricted by default
 lore sync export .lore --include-deprecated --include-superseded
+lore sync export .lore --clean       # remove stale <id>.md files first
 lore sync import .lore               # upsert every .md back into SQLite
 lore sync import .lore --include-restricted
 ```
