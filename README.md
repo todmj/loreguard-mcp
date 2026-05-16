@@ -79,17 +79,24 @@ useful — a convention, a gotcha, a service-specific rule. Suggestions land as
 **drafts**: invisible to default search until a human approves them.
 
 ```bash
-lore review            # list pending drafts
+lore review            # interactive triage queue:
+                       #   [a]pprove  [r]eject  [e]dit  [s]kip  [q]uit
+lore review --list     # non-interactive list of pending drafts (for piping)
 lore approve <id>      # promote draft → active
+lore reject <id>       # drop a draft (refuses non-drafts)
 lore deprecate <id>    # mark deprecated (still findable with a flag)
 lore supersede <old> --with <new>
 lore verify <id>       # bump lastVerifiedAt and clear stale warning
 ```
 
+`lore review` walks each pending draft one at a time so triage is a
+keystroke per record. `[e]dit` prints the `lore update <id>` template to
+copy-paste — keeps the prompt loop simple and avoids reaching for `$EDITOR`.
+
 This is the poisoning-prevention guard: **agents can suggest knowledge, but
-only humans (via the CLI) can approve, deprecate, or supersede records.**
-The MCP server deliberately exposes no `approve` tool — agents cannot
-promote their own suggestions.
+only humans (via the CLI) can approve, reject, deprecate, or supersede
+records.** The MCP server deliberately exposes no approval tool — agents
+cannot promote their own suggestions.
 
 ## Search
 

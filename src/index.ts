@@ -21,6 +21,7 @@ export {
   listRecent,
   listRepos,
   listTags,
+  rejectLore,
   searchLore,
   supersedeLore,
   suggestLore,

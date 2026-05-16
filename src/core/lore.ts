@@ -486,6 +486,33 @@ export function updateLore(
   return getLore(db, id);
 }
 
+/**
+ * Reject a draft. Hard-deletes the row + cascades repos/tags, but emits
+ * a `rejected` event (not `deleted`) so the audit chain shows the human
+ * triage decision distinct from a manual `lore delete`. Refuses to act
+ * on non-drafts — promoted records get `deprecateLore` / `supersedeLore`
+ * instead.
+ *
+ * Returns true on success, false if the id doesn't exist or isn't a draft.
+ */
+export function rejectLore(db: Database, id: string): boolean {
+  const ts = nowIso();
+  const row = db
+    .prepare("SELECT rowid, status FROM lore WHERE id = ?")
+    .get(id) as { rowid: number; status: LoreStatus } | undefined;
+  if (!row) return false;
+  if (row.status !== "draft") return false;
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
+    db.prepare("DELETE FROM lore WHERE id = ?").run(id);
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts) VALUES (?, 'rejected', ?)",
+    ).run(id, ts);
+  });
+  tx();
+  return true;
+}
+
 export function deleteLore(db: Database, id: string): boolean {
   const ts = nowIso();
   const row = db

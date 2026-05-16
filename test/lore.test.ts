@@ -11,6 +11,7 @@ import {
   listRecent,
   listRepos,
   listTags,
+  rejectLore,
   searchLore,
   supersedeLore,
   suggestLore,
@@ -145,6 +146,54 @@ describe("core/lore", () => {
         source: "https://example.com/adrs/14",
       });
       expect(lore.confidence).toBe("high");
+    });
+  });
+
+  describe("rejectLore (interactive triage)", () => {
+    it("deletes the row, cascades repos+tags, removes FTS, emits 'rejected'", () => {
+      const draft = suggestLore(db, {
+        title: "speculation about widgets",
+        summary: "s",
+        body: "b",
+        repos: ["x"],
+        tags: ["y"],
+      });
+      expect(rejectLore(db, draft.id)).toBe(true);
+      expect(getLore(db, draft.id)).toBeNull();
+      expect(
+        db.prepare("SELECT * FROM lore_repos WHERE lore_id = ?").all(draft.id),
+      ).toEqual([]);
+      expect(
+        db.prepare("SELECT * FROM lore_tags WHERE lore_id = ?").all(draft.id),
+      ).toEqual([]);
+      expect(searchLore(db, { query: "widgets" })).toEqual([]);
+      // Event is 'rejected', not 'deleted' — distinguishes triage from manual delete.
+      const kinds = (
+        db
+          .prepare("SELECT kind FROM events WHERE lore_id = ? ORDER BY rowid")
+          .all(draft.id) as Array<{ kind: string }>
+      ).map((e) => e.kind);
+      expect(kinds).toEqual(["suggested", "rejected"]);
+    });
+
+    it("refuses to reject an active record (use deprecateLore instead)", () => {
+      const active = addLore(db, { title: "real rule", summary: "s", body: "b" });
+      expect(rejectLore(db, active.id)).toBe(false);
+      // Untouched.
+      expect(getLore(db, active.id)?.status).toBe("active");
+    });
+
+    it("refuses to reject deprecated / superseded records", () => {
+      const a = addLore(db, { title: "old", summary: "s", body: "b" });
+      const b = addLore(db, { title: "new", summary: "s", body: "b" });
+      deprecateLore(db, a.id);
+      expect(rejectLore(db, a.id)).toBe(false);
+      supersedeLore(db, a.id, b.id);
+      expect(rejectLore(db, a.id)).toBe(false);
+    });
+
+    it("returns false for unknown id", () => {
+      expect(rejectLore(db, "ghost123")).toBe(false);
     });
   });
 

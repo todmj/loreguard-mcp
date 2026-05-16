@@ -14,6 +14,7 @@ import {
   listRecent,
   listRepos,
   listTags,
+  rejectLore,
   searchLore,
   supersedeLore,
   suggestLore,
@@ -43,8 +44,14 @@ COMMANDS
                             --include-restricted, --limit
   show <id>                 Print the full record (body included).
   list                      Recent records across all lifecycle states.
-  review                    List pending drafts awaiting approval.
+  review [--list]           Interactive triage queue: show each pending
+                            draft and ask [a]pprove / [r]eject / [e]dit /
+                            [s]kip / [q]uit. Use --list (or pipe to stdout)
+                            for the non-interactive list view.
   approve <id>              Promote draft → active.
+  reject <id>               Drop a draft. Refuses non-drafts (use
+                            deprecate instead). Emits a 'rejected' event
+                            so the audit chain shows the triage decision.
   deprecate <id>            Mark deprecated.
   supersede <old-id> --with <new-id>
                             Mark <old-id> as superseded by <new-id>.
@@ -221,7 +228,7 @@ async function cmdList(): Promise<number> {
   }
 }
 
-async function cmdReview(): Promise<number> {
+async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
   const db = openDb();
   try {
     const drafts = listDrafts(db);
@@ -229,11 +236,107 @@ async function cmdReview(): Promise<number> {
       process.stdout.write("lore: no pending drafts.\n");
       return 0;
     }
-    process.stdout.write(`${drafts.length} draft(s) awaiting review:\n\n`);
-    for (const d of drafts) process.stdout.write(renderSummary(d) + "\n\n");
+
+    // Two modes: default is interactive (per-draft a/r/e/s/q triage).
+    // `--list` or non-TTY stdin falls back to the old "print them all" view
+    // so `lore review | grep` doesn't hang.
+    const listOnly =
+      getBool(args.flags, "list") || !process.stdin.isTTY;
+
+    if (listOnly) {
+      process.stdout.write(`${drafts.length} draft(s) awaiting review:\n\n`);
+      for (const d of drafts) process.stdout.write(renderSummary(d) + "\n\n");
+      process.stdout.write(
+        "Use `lore approve <id>` to promote, or `lore reject <id>` to drop.\n",
+      );
+      return 0;
+    }
+
+    // Interactive triage queue. Iterate drafts oldest-first (createdAt asc
+    // happens to also be the natural triage order — first in, first reviewed).
     process.stdout.write(
-      "Use `lore approve <id>` to promote, or `lore show <id>` to inspect.\n",
+      `${drafts.length} draft(s) awaiting review. Press q to quit at any time.\n\n`,
     );
+    let approved = 0;
+    let rejected = 0;
+    let skipped = 0;
+    for (let i = 0; i < drafts.length; i++) {
+      const d = drafts[i]!;
+      const full = getLore(db, d.id);
+      if (!full) continue; // raced / deleted
+
+      process.stdout.write(`── Draft ${i + 1} of ${drafts.length} ──\n`);
+      process.stdout.write(renderFull(full) + "\n\n");
+      const answer = (
+        await prompt("[a]pprove  [r]eject  [e]dit  [s]kip  [q]uit  > ")
+      )
+        .trim()
+        .toLowerCase();
+
+      if (answer === "q" || answer === "quit" || answer === "exit") {
+        process.stdout.write("\nlore: stopped.\n");
+        break;
+      }
+      if (answer === "a" || answer === "approve" || answer === "y") {
+        const promoted = approveLore(db, d.id);
+        process.stdout.write(
+          promoted
+            ? `✓ approved ${d.id}\n\n`
+            : `✗ could not approve ${d.id}\n\n`,
+        );
+        if (promoted) approved++;
+        continue;
+      }
+      if (answer === "r" || answer === "reject" || answer === "n") {
+        const ok = rejectLore(db, d.id);
+        process.stdout.write(
+          ok ? `✗ rejected ${d.id}\n\n` : `! could not reject ${d.id}\n\n`,
+        );
+        if (ok) rejected++;
+        continue;
+      }
+      if (answer === "e" || answer === "edit") {
+        // Don't reach for $EDITOR yet — print the update command the user
+        // can paste with their preferred shell tooling. Keeps the prompt
+        // loop simple; user can come back to `lore review` next.
+        process.stdout.write(
+          `\nTo edit this draft, run:\n` +
+            `  lore update ${d.id} --summary "..." --body "..."\n` +
+            `Then re-run \`lore review\` to triage it again.\n\n`,
+        );
+        skipped++;
+        continue;
+      }
+      // Anything else (including bare Enter) is treated as skip.
+      process.stdout.write(`… skipped ${d.id}\n\n`);
+      skipped++;
+    }
+
+    const tally =
+      `approved: ${approved}  rejected: ${rejected}  skipped: ${skipped}`;
+    process.stdout.write(`\nReview complete. ${tally}\n`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdReject(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const id = args.positionals[0];
+  if (!id) {
+    process.stderr.write("lore: reject <id> requires an id\n");
+    return 2;
+  }
+  const db = openDb();
+  try {
+    const ok = rejectLore(db, id);
+    if (!ok) {
+      process.stderr.write(
+        `lore: cannot reject ${id} (unknown id or not a draft; use \`lore deprecate\` for active records)\n`,
+      );
+      return 1;
+    }
+    process.stdout.write(`lore: rejected ${id}\n`);
     return 0;
   } finally {
     db.close();
@@ -596,9 +699,11 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
       case "list":
         return await cmdList();
       case "review":
-        return await cmdReview();
+        return await cmdReview(parsed);
       case "approve":
         return await cmdApprove(parsed);
+      case "reject":
+        return await cmdReject(parsed);
       case "deprecate":
         return await cmdDeprecate(parsed);
       case "supersede":
