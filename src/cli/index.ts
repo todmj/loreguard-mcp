@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,7 @@ import {
   approveLore,
   deleteLore,
   deprecateLore,
+  exportLore,
   findPossibleDuplicates,
   getLore,
   listDrafts,
@@ -67,6 +68,15 @@ COMMANDS
   delete <id>               Hard-delete the record (events row preserved).
   tags                      Print all distinct tags.
   repos                     Print all distinct repos.
+  export [--out <path>]     Export lore as a single JSON document
+                            (envelope: { schemaVersion, exportedAt,
+                            records }). Default: active + non-restricted
+                            only, stable ordering by updated_at desc.
+                            Without --out, writes to stdout. With --out,
+                            writes the file with mode 0600.
+                            Opt-ins: --include-drafts,
+                            --include-deprecated, --include-superseded,
+                            --include-restricted.
   audit [--n=N] [--raw]     Print the last N audit log lines (default 20)
                             in a redacted human-readable form. Use --raw
                             to see the full JSON instead.
@@ -598,6 +608,45 @@ async function cmdRepos(): Promise<number> {
   }
 }
 
+async function cmdExport(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const out = getString(args.flags, "out");
+  const includeDrafts = getBool(args.flags, "include-drafts");
+  const includeDeprecated = getBool(args.flags, "include-deprecated");
+  const includeSuperseded = getBool(args.flags, "include-superseded");
+  const includeRestricted = getBool(args.flags, "include-restricted");
+  const db = openDb();
+  try {
+    const records = exportLore(db, {
+      includeDrafts,
+      includeDeprecated,
+      includeSuperseded,
+      includeRestricted,
+    });
+    const envelope = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      records,
+    };
+    const json = JSON.stringify(envelope, null, 2) + "\n";
+    if (out) {
+      writeFileSync(out, json, { encoding: "utf8" });
+      try {
+        chmodSync(out, 0o600);
+      } catch {
+        // best-effort: some filesystems (e.g. Windows under WSL) can't chmod
+      }
+      process.stdout.write(
+        `lore: exported ${records.length} record(s) to ${out}\n`,
+      );
+    } else {
+      process.stdout.write(json);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdDoctor(): Promise<number> {
   const { exitCode, checks } = runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
@@ -753,6 +802,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdRepos();
       case "audit":
         return await cmdAudit(parsed);
+      case "export":
+        return await cmdExport(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":

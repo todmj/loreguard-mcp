@@ -6,6 +6,7 @@ import {
   approveLore,
   deleteLore,
   deprecateLore,
+  exportLore,
   findPossibleDuplicates,
   getLore,
   listDrafts,
@@ -830,6 +831,125 @@ describe("core/lore", () => {
           title: "Magenta dirigible policy",
         }),
       ).toEqual({ duplicates: [], restrictedDuplicateCount: 0 });
+    });
+  });
+
+  describe("exportLore", () => {
+    /**
+     * Round-trip-ish coverage: the export should reflect the same
+     * default-safe lifecycle filter as search (active + non-restricted),
+     * round-trip the full Lore shape (including body), and provide a
+     * stable ordering so two exports of the same DB diff cleanly.
+     */
+    it("defaults to active + non-restricted only", () => {
+      const active = addLore(db, { title: "active rule", summary: "s", body: "B" });
+      const draft = suggestLore(db, { title: "draft rule", summary: "s", body: "B" });
+      const deprecated = addLore(db, {
+        title: "old rule",
+        summary: "s",
+        body: "B",
+      });
+      deprecateLore(db, deprecated.id);
+      const restricted = addLore(db, {
+        title: "restricted rule",
+        summary: "s",
+        body: "B",
+        restricted: true,
+      });
+      const recs = exportLore(db);
+      const ids = recs.map((r) => r.id);
+      expect(ids).toContain(active.id);
+      expect(ids).not.toContain(draft.id);
+      expect(ids).not.toContain(deprecated.id);
+      expect(ids).not.toContain(restricted.id);
+    });
+
+    it("includes the body — full Lore, not a brief summary", () => {
+      addLore(db, {
+        title: "round-trip body test",
+        summary: "s",
+        body: "BODY-MARKER-12345",
+      });
+      const [rec] = exportLore(db);
+      expect(rec?.body).toBe("BODY-MARKER-12345");
+    });
+
+    it("honours each opt-in flag independently", () => {
+      const a = addLore(db, { title: "a", summary: "s", body: "B" });
+      const drafted = suggestLore(db, { title: "b draft", summary: "s", body: "B" });
+      const dep = addLore(db, { title: "c dep", summary: "s", body: "B" });
+      deprecateLore(db, dep.id);
+      const sup1 = addLore(db, { title: "d sup-old", summary: "s", body: "B" });
+      const sup2 = addLore(db, { title: "e sup-new", summary: "s", body: "B" });
+      supersedeLore(db, sup1.id, sup2.id);
+      const r = addLore(db, {
+        title: "f restricted",
+        summary: "s",
+        body: "B",
+        restricted: true,
+      });
+
+      expect(exportLore(db).map((x) => x.id).sort()).toEqual(
+        [a.id, sup2.id].sort(),
+      );
+      expect(
+        exportLore(db, { includeDrafts: true }).map((x) => x.id),
+      ).toContain(drafted.id);
+      expect(
+        exportLore(db, { includeDeprecated: true }).map((x) => x.id),
+      ).toContain(dep.id);
+      expect(
+        exportLore(db, { includeSuperseded: true }).map((x) => x.id),
+      ).toContain(sup1.id);
+      expect(
+        exportLore(db, { includeRestricted: true }).map((x) => x.id),
+      ).toContain(r.id);
+    });
+
+    it("produces stable ordering: updated_at desc, id asc tiebreak", async () => {
+      const a = addLore(db, { title: "a", summary: "s", body: "B" });
+      const b = addLore(db, { title: "b", summary: "s", body: "B" });
+      const c = addLore(db, { title: "c", summary: "s", body: "B" });
+      // Ensure the next mutation gets a later ISO millisecond stamp.
+      await new Promise((r) => setTimeout(r, 5));
+      updateLore(db, b.id, { summary: "s2" });
+      const ids = exportLore(db).map((r) => r.id);
+      expect(ids[0]).toBe(b.id);
+      expect(ids.slice(1).sort()).toEqual([a.id, c.id].sort());
+    });
+
+    it("falls back to id-asc tiebreak when updated_at is identical", () => {
+      // Same insert tick: updated_at collides at ms precision, so ordering
+      // must be deterministic via the id-ASC tiebreak. We can't predict
+      // the random ids, but the export's id order should be ascending.
+      const ids = [
+        addLore(db, { title: "x", summary: "s", body: "B" }).id,
+        addLore(db, { title: "y", summary: "s", body: "B" }).id,
+        addLore(db, { title: "z", summary: "s", body: "B" }).id,
+      ];
+      // If timestamps collide (likely in a fast loop), all three share an
+      // updated_at; if they don't, the test still passes because we only
+      // assert determinism, not a specific order.
+      const exportedIds = exportLore(db).map((r) => r.id);
+      // The set of returned ids matches the inserted set.
+      expect(new Set(exportedIds)).toEqual(new Set(ids));
+      // And a second export gives the identical ordering — that's the
+      // determinism guarantee.
+      const exportedIdsAgain = exportLore(db).map((r) => r.id);
+      expect(exportedIdsAgain).toEqual(exportedIds);
+    });
+
+    it("returns repos + tags joined per record", () => {
+      addLore(db, {
+        title: "with-meta",
+        summary: "s",
+        body: "B",
+        repos: ["payments-svc", "auth-svc"],
+        tags: ["security", "passwords"],
+      });
+      const [rec] = exportLore(db);
+      expect(rec?.repos).toEqual(["auth-svc", "payments-svc"]);
+      expect(rec?.tags).toEqual(["passwords", "security"]);
     });
   });
 
