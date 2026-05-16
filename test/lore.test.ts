@@ -277,6 +277,20 @@ describe("core/lore", () => {
       expect(hits.map((h) => h.id)).toEqual([b.id]);
     });
 
+    it("includes superseded when explicitly opted in", () => {
+      const a = addLore(db, { title: "Cerulean dirigible original", summary: "s", body: "b" });
+      const b = addLore(db, { title: "Cerulean dirigible replacement", summary: "s", body: "b" });
+      supersedeLore(db, a.id, b.id);
+      const hits = searchLore(db, {
+        query: "Cerulean dirigible",
+        includeSuperseded: true,
+      });
+      const ids = hits.map((h) => h.id).sort();
+      expect(ids).toEqual([a.id, b.id].sort());
+      const old = hits.find((h) => h.id === a.id);
+      expect(old?.status).toBe("superseded");
+    });
+
     it("excludes restricted by default", () => {
       const hits = searchLore(db, { query: "incident" });
       expect(hits.every((h) => h.restricted === false)).toBe(true);

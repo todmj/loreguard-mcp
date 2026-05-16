@@ -41,7 +41,8 @@ COMMANDS
   search <query...>         Full-text search. Returns brief summaries.
                             Flags: --repo, --tag, --updated-after,
                             --include-drafts, --include-deprecated,
-                            --include-restricted, --limit
+                            --include-superseded, --include-restricted,
+                            --limit
   show <id>                 Print the full record (body included).
   list                      Recent records across all lifecycle states.
   review [--list]           Interactive triage queue: show each pending
@@ -167,6 +168,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const limit = parseLimit(getString(args.flags, "limit")) ?? 10;
   const includeDrafts = getBool(args.flags, "include-drafts");
   const includeDeprecated = getBool(args.flags, "include-deprecated");
+  const includeSuperseded = getBool(args.flags, "include-superseded");
   const includeRestricted = getBool(args.flags, "include-restricted");
   const db = openDb();
   try {
@@ -178,6 +180,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
       limit,
       includeDrafts,
       includeDeprecated,
+      includeSuperseded,
       includeRestricted,
     });
     if (hits.length === 0) {

@@ -163,7 +163,7 @@ result.)
 
 Claude sees three tools:
 
-- `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeRestricted?, limit? })` — returns brief summaries
+- `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries
 - `get_lore({ id })` — full body of one record
 - `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft
 
