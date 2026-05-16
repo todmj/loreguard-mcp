@@ -331,13 +331,26 @@ export async function runMcpServer(): Promise<void> {
         // the user inline ("I drafted this but here are 2 similar
         // existing records"), and counted in the audit so a human reading
         // ~/.lore/audit.jsonl can see how often agents suggest near-dupes.
-        const possibleDuplicates = findPossibleDuplicates(db, {
-          id: lore.id,
-          title: args.title,
-          repos: args.repos,
-          tags: args.tags,
-        });
+        //
+        // Restricted handling: titles of restricted records are not
+        // surfaced unless LORE_ALLOW_RESTRICTED_MCP=1 (same env knob that
+        // governs search and get). Restricted matches are still counted
+        // so the response can say "and N more we're not showing you".
+        const allowRestricted =
+          process.env["LORE_ALLOW_RESTRICTED_MCP"] === "1";
+        const { duplicates: possibleDuplicates, restrictedDuplicateCount } =
+          findPossibleDuplicates(
+            db,
+            {
+              id: lore.id,
+              title: args.title,
+              repos: args.repos,
+              tags: args.tags,
+            },
+            { allowRestricted },
+          );
         sanitised["possibleDuplicateCount"] = possibleDuplicates.length;
+        sanitised["restrictedDuplicateCount"] = restrictedDuplicateCount;
         audit({
           tool: "suggest_lore",
           request: sanitised,
@@ -356,6 +369,7 @@ export async function runMcpServer(): Promise<void> {
                     "Draft created. A human will review with `lore review` and " +
                     "promote with `lore approve " + lore.id + "`.",
                   possibleDuplicates,
+                  restrictedDuplicateCount,
                 },
                 null,
                 2,

@@ -624,6 +624,30 @@ function toFtsQuery(input: string): string {
   return parts.map((p) => `"${p}"`).join(" ");
 }
 
+export interface PossibleDuplicate extends LoreSummary {
+  /**
+   * Human-readable signal summary explaining why this record was surfaced
+   * as a duplicate candidate ("similar-title; shared-repo:payments-svc"
+   * etc). Hint-grade; the reviewer makes the call.
+   */
+  readonly reason: string;
+}
+
+export interface PossibleDuplicateResult {
+  /**
+   * Records the caller is allowed to see. By default this excludes
+   * restricted records; pass `allowRestricted: true` to include them
+   * (the MCP layer wires this to LORE_ALLOW_RESTRICTED_MCP).
+   */
+  readonly duplicates: PossibleDuplicate[];
+  /**
+   * Count of matching restricted records — always populated, regardless
+   * of whether they ended up in `duplicates`. Lets the agent / CLI say
+   * "and N more we're not showing you" without leaking titles.
+   */
+  readonly restrictedDuplicateCount: number;
+}
+
 /**
  * Reviewer aid for suggest_lore: given a record's title (+ optional repo/tag
  * scope), return up to `limit` existing records that look similar — so the
@@ -638,11 +662,13 @@ function toFtsQuery(input: string): string {
  *   - Considers `active` + `draft` records (not deprecated / superseded —
  *     those are tombstones; the reviewer doesn't need to know about them).
  *   - Excludes the just-inserted record itself (caller passes its id).
- *   - Excludes `restricted` records — we don't surface restricted titles
- *     as a side effect of a draft suggestion.
+ *   - Restricted records are excluded from `duplicates` by default but
+ *     counted in `restrictedDuplicateCount`. Pass `allowRestricted: true`
+ *     (the MCP server wires this to LORE_ALLOW_RESTRICTED_MCP) to include
+ *     restricted titles in `duplicates` instead.
  *
- * Returns `[]` when the title is too short for meaningful matching (< 2
- * tokens of length ≥ 3) rather than guessing.
+ * Returns an empty result when the title is too short for meaningful
+ * matching (< 2 tokens of length ≥ 3) rather than guessing.
  */
 export function findPossibleDuplicates(
   db: Database,
@@ -651,14 +677,21 @@ export function findPossibleDuplicates(
     title: string;
     repos?: ReadonlyArray<string>;
     tags?: ReadonlyArray<string>;
-    limit?: number;
   },
-): LoreSummary[] {
+  options: { allowRestricted?: boolean; limit?: number } = {},
+): PossibleDuplicateResult {
+  const empty: PossibleDuplicateResult = {
+    duplicates: [],
+    restrictedDuplicateCount: 0,
+  };
   const tokens = tokenizeTitleForDuplicates(input.title);
-  if (tokens.length < 2) return [];
-  const limit = input.limit ?? 3;
+  if (tokens.length < 2) return empty;
+  const limit = options.limit ?? 3;
+  const allowRestricted = options.allowRestricted ?? false;
   // OR the tokens so we surface any partial overlap. FTS5 OR is the default
-  // join, but spell it out for clarity.
+  // join, but spell it out for clarity. Note we DON'T filter restricted at
+  // the SQL level — we need to count restricted matches even when we don't
+  // surface them.
   const ftsQuery = tokens.map((t) => `"${t}"`).join(" OR ");
   const rows = db
     .prepare(
@@ -667,9 +700,8 @@ export function findPossibleDuplicates(
        WHERE lore_fts MATCH ?
          AND l.id != ?
          AND l.status IN ('active', 'draft')
-         AND l.restricted = 0
        ORDER BY score ASC
-       LIMIT 20`,
+       LIMIT 40`,
     )
     .all(ftsQuery, input.id) as Array<LoreRow & { score: number }>;
 
@@ -679,27 +711,53 @@ export function findPossibleDuplicates(
   const wantTags = new Set(
     (input.tags ?? []).map(normaliseTag).filter(Boolean),
   );
+
+  let restrictedDuplicateCount = 0;
   type Scored = {
     row: LoreRow & { score: number };
     repos: string[];
     tags: string[];
+    sharedRepos: string[];
+    sharedTags: string[];
     overlap: number;
   };
-  const scored: Scored[] = rows.map((row) => {
+  const scored: Scored[] = [];
+  for (const row of rows) {
+    if (row.restricted === 1) {
+      restrictedDuplicateCount++;
+      if (!allowRestricted) continue;
+    }
     const repos = reposOf(db, row.id);
     const tags = tagsOf(db, row.id);
-    let overlap = 0;
-    for (const r of repos) if (wantRepos.has(r)) overlap++;
-    for (const t of tags) if (wantTags.has(t)) overlap++;
-    return { row, repos, tags, overlap };
-  });
+    const sharedRepos = repos.filter((r) => wantRepos.has(r));
+    const sharedTags = tags.filter((t) => wantTags.has(t));
+    scored.push({
+      row,
+      repos,
+      tags,
+      sharedRepos,
+      sharedTags,
+      overlap: sharedRepos.length + sharedTags.length,
+    });
+  }
   scored.sort((a, b) => {
     if (a.overlap !== b.overlap) return b.overlap - a.overlap;
     return a.row.score - b.row.score;
   });
-  return scored
+  const duplicates: PossibleDuplicate[] = scored
     .slice(0, limit)
-    .map((s) => rowToSummary(s.row, s.repos, s.tags, s.row.score));
+    .map((s) => {
+      const summary = rowToSummary(s.row, s.repos, s.tags, s.row.score);
+      const signals: string[] = ["similar-title"];
+      if (s.sharedRepos.length > 0) {
+        signals.push(`shared-repo:${s.sharedRepos.join(",")}`);
+      }
+      if (s.sharedTags.length > 0) {
+        signals.push(`shared-tag:${s.sharedTags.join(",")}`);
+      }
+      return { ...summary, reason: signals.join("; ") };
+    });
+  return { duplicates, restrictedDuplicateCount };
 }
 
 /**
