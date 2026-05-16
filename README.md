@@ -19,10 +19,9 @@ it, and get a compact summary back. Full body only on demand.
 > (`better-sqlite3`) that's built at install time.
 
 ```bash
-git clone https://github.com/<your-handle>/lore-mcp.git
+git clone https://github.com/todmj/lore-mcp.git
 cd lore-mcp
-pnpm install
-pnpm rebuild better-sqlite3   # one-time native build
+pnpm install                  # builds the better-sqlite3 native binding too
 pnpm build
 npm link                      # makes `lore` and `lore-mcp` available on $PATH
 lore init

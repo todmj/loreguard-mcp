@@ -29,10 +29,15 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Rebuild native modules
-        # better-sqlite3 ships a native binding that pnpm blocks by
-        # default. Rebuild it explicitly so test + build can find it.
-        run: pnpm rebuild better-sqlite3
+      - name: Verify native binding
+        # `pnpm.onlyBuiltDependencies` in package.json tells pnpm v10+
+        # it's safe to run better-sqlite3's install script during the
+        # frozen install above. Belt-and-braces: assert the binary
+        # actually landed before tests try to load it.
+        run: |
+          set -e
+          node -e "require('better-sqlite3')(':memory:').close()"
+          echo "better-sqlite3 native binding: OK"
 
       - run: pnpm typecheck
 
