@@ -32,6 +32,7 @@ import {
   INDUCTION_QUESTIONS,
   type InductionAnswer,
   runInduct,
+  shortInductionQuestions,
   shortRepoNameFromRemote,
 } from "./induct.js";
 import { renderClaudeInstructions } from "./instructions.js";
@@ -97,13 +98,14 @@ COMMANDS
                             authoring content first. Refuses to seed into
                             a non-empty DB unless --force. Use --clean to
                             remove the demo records later.
-  induct [--repo <name>]    Repo-onboarding interview: walks you through
-                            10 high-signal questions and turns each
-                            non-blank answer into a DRAFT lore record
-                            (tagged 'induction', 90-day review window).
-                            Drafts only — promote via \`lore review\`. Use
-                            --repo to override the auto-detected name
-                            (repeatable).
+  induct [--repo <name>] [--short]
+                            Repo-onboarding interview: walks you through
+                            10 high-signal questions (or 5 with --short)
+                            and turns each non-blank answer into a DRAFT
+                            lore record (tagged 'induction', 90-day
+                            review window). Drafts only — promote via
+                            \`lore review\`. Use --repo to override the
+                            auto-detected name (repeatable).
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -757,8 +759,11 @@ async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
   }
 
+  const short = getBool(args.flags, "short");
+  const questions = short ? shortInductionQuestions() : INDUCTION_QUESTIONS;
+
   process.stdout.write(
-    `\nlore induct — ${INDUCTION_QUESTIONS.length} questions. ` +
+    `\nlore induct — ${questions.length} questions${short ? " (--short)" : ""}. ` +
       `Answers become DRAFTS (review with \`lore review\` afterwards).\n` +
       `Press blank-line to skip a question, type 'q' on the answer line to quit early.\n` +
       (repos.length > 0 ? `Repos: ${repos.join(", ")}\n` : "") +
@@ -767,10 +772,10 @@ async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
 
   const answers: InductionAnswer[] = [];
   let quitEarly = false;
-  for (let i = 0; i < INDUCTION_QUESTIONS.length; i++) {
-    const q = INDUCTION_QUESTIONS[i]!;
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i]!;
     process.stdout.write(
-      `── ${i + 1} of ${INDUCTION_QUESTIONS.length} ── ${q.topic} ──\n${q.prompt}\n`,
+      `── ${i + 1} of ${questions.length} ── ${q.topic} ──\n${q.prompt}\n`,
     );
     const ans = await promptMulti("Answer:");
     const trimmed = ans.trim();
