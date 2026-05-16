@@ -1,5 +1,5 @@
 /**
- * `lore induct` — repo onboarding interview. Tests drive `runInduct`
+ * `loreguard induct` — repo onboarding interview. Tests drive `runInduct`
  * directly with canned answers; the interactive readline wrapper in
  * cli/index.ts is exercised by hand. Pure-function tests focus on the
  * invariants worth guarding:

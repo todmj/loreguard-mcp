@@ -1,6 +1,6 @@
 /**
  * Audit log boundary test. The MCP server MUST NOT write the body of
- * a suggested or updated lore record to ~/.lore/audit.jsonl. That's
+ * a suggested or updated lore record to ~/.loreguard/audit.jsonl. That's
  * the explicit security claim in README + SECURITY.md and the only
  * meaningful failure mode this test guards against. We exercise the
  * audit module directly (not via the live MCP server, which requires
@@ -15,8 +15,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const tmpPath = join(tmpdir(), `lore-audit-test-${Date.now()}-${process.pid}.jsonl`);
 
 beforeEach(() => {
-  process.env["LORE_AUDIT_LOG"] = tmpPath;
-  delete process.env["LORE_AUDIT_OFF"];
+  process.env["LOREGUARD_AUDIT_LOG"] = tmpPath;
+  delete process.env["LOREGUARD_AUDIT_OFF"];
 });
 afterEach(() => {
   try {
@@ -28,7 +28,7 @@ afterEach(() => {
 
 async function freshAudit() {
   // Re-import to clear the module-scoped `initialised` flag and force a
-  // re-read of the LORE_AUDIT_LOG env var. Vitest gives each test a
+  // re-read of the LOREGUARD_AUDIT_LOG env var. Vitest gives each test a
   // module cache, so importing here is fine.
   const mod = await import("../src/core/audit.js?ts=" + Date.now());
   return mod;

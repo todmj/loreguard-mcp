@@ -2,7 +2,7 @@
  * MCP trust-boundary helpers for restricted records.
  *
  * `search_lore` already env-gates restricted retrieval via
- * `LORE_ALLOW_RESTRICTED_MCP`. Without a matching gate on `get_lore(id)`,
+ * `LOREGUARD_ALLOW_RESTRICTED_MCP`. Without a matching gate on `get_lore(id)`,
  * any agent in possession of an id (a stale audit line, a prior message,
  * a CLI screenshot) could fetch the body and bypass the search gate.
  * These helpers close that asymmetry: when the gate is off and the
@@ -29,7 +29,7 @@ export function redactRestricted(id: string): RestrictedRefusal {
     id,
     restricted: true,
     error: "restricted",
-    hint: "Set LORE_ALLOW_RESTRICTED_MCP=1 to allow MCP access to restricted lore.",
+    hint: "Set LOREGUARD_ALLOW_RESTRICTED_MCP=1 to allow MCP access to restricted lore.",
   };
 }
 
@@ -47,5 +47,5 @@ export function shouldGateRestrictedGet(
 ): boolean {
   if (!lore) return false;
   if (!lore.restricted) return false;
-  return env["LORE_ALLOW_RESTRICTED_MCP"] !== "1";
+  return env["LOREGUARD_ALLOW_RESTRICTED_MCP"] !== "1";
 }

@@ -1,8 +1,8 @@
 import { createInterface } from "node:readline";
 
 /**
- * Tiny readline wrapper for `lore add` interactive mode. We deliberately
- * don't reach for inquirer — `lore` should be installable with a small
+ * Tiny readline wrapper for `loreguard add` interactive mode. We deliberately
+ * don't reach for inquirer — `loreguard` should be installable with a small
  * dependency footprint that's easy for an enterprise SecEng team to audit.
  */
 export async function prompt(question: string): Promise<string> {

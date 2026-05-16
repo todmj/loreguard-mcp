@@ -1,10 +1,10 @@
 /**
- * `lore demo` — seed a handful of realistic-but-clearly-illustrative
+ * `loreguard demo` — seed a handful of realistic-but-clearly-illustrative
  * records so a new user can try `list`, `search`, and `review` without
  * having to think up content. Safety constraints:
  *
  *   - refuses to seed into a non-empty DB unless `--force`
- *   - every record carries the `demo` tag so `lore demo --clean` can
+ *   - every record carries the `demo` tag so `loreguard demo --clean` can
  *     undo the seed without touching real lore
  *   - no fake credentials, no fake PII, nothing that looks plausibly
  *     sensitive
@@ -26,7 +26,7 @@ const DEMO_TAG = "demo";
 
 /**
  * Returns the number of lore rows in the DB. Used by the CLI to refuse
- * `lore demo` (without `--force`) on a non-empty store so we don't
+ * `loreguard demo` (without `--force`) on a non-empty store so we don't
  * mix demo content into a real working set.
  */
 export function countLore(db: Database): number {
@@ -81,7 +81,7 @@ export function seedDemo(db: Database): DemoResult {
     summary:
       "Demo decision: Argon2id (m=64MB, t=3, p=4) is the password-hash default.",
     body:
-      "This is an example lore record installed by `lore demo`.\n\n" +
+      "This is an example lore record installed by `loreguard demo`.\n\n" +
       "In a real team, you'd record decisions like this so future agents " +
       "stop suggesting bcrypt. Source URL would link to your ADR or PR.\n\n" +
       "Demo only — no production effect.",
@@ -137,14 +137,14 @@ export function seedDemo(db: Database): DemoResult {
     confidence: "medium",
   });
 
-  // One draft so `lore review` has something to triage.
+  // One draft so `loreguard review` has something to triage.
   const r5 = suggestLore(db, {
     title: "Prefer feature flags over branching for risky changes",
     summary: "Demo draft: agent-suggested convention, awaiting human review.",
     body:
-      "This is an example draft installed by `lore demo`. In a real " +
+      "This is an example draft installed by `loreguard demo`. In a real " +
       "session an agent would call suggest_lore after spotting a pattern. " +
-      "Run `lore review` to see the triage flow.\n\n" +
+      "Run `loreguard review` to see the triage flow.\n\n" +
       "Demo only — no production effect.",
     repos: ["payments-svc"],
     tags: [DEMO_TAG, "conventions", "deploys"],

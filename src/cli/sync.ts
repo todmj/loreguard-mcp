@@ -1,7 +1,7 @@
 /**
- * `lore sync` — Markdown round-trip for PR-reviewable team lore.
+ * `loreguard sync` — Markdown round-trip for PR-reviewable team lore.
  *
- * SQLite stays the canonical source of truth for v0.1. `.lore/<id>.md`
+ * SQLite stays the canonical source of truth for v0.1. `.loreguard/<id>.md`
  * is a sync artifact: a frontmatter+body file per record, committable
  * to the repo so a team can review knowledge in pull requests. Import
  * is the inverse: parse the .md files back into the SQLite store.
@@ -203,7 +203,7 @@ const LORE_ID_FILE_RE = /^[a-z2-9]{8}\.md$/;
  *
  * Existing files in the dir are NOT removed: callers that want a
  * deterministic mirror should clear the dir first. This avoids
- * surprising deletions when someone runs `lore sync export` against
+ * surprising deletions when someone runs `loreguard sync export` against
  * a working copy.
  */
 export function exportToDir(
@@ -272,7 +272,7 @@ export function exportToDir(
 
 export interface ImportSyncOptions {
   /**
-   * If true, import even restricted records from the .lore/ directory.
+   * If true, import even restricted records from the .loreguard/ directory.
    * Off by default — committed restricted records are a red flag, but
    * an opt-in matters for teams that have a private repo and treat the
    * git history as the security boundary.
@@ -309,7 +309,7 @@ export function importFromDir(
     entries = readdirSync(dir).filter((f) => f.endsWith(".md"));
   } catch (err) {
     throw new Error(
-      `lore sync import: cannot read directory ${dir} — ${
+      `loreguard sync import: cannot read directory ${dir} — ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
