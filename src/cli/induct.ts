@@ -261,8 +261,8 @@ export function runInduct(db: Database, opts: InductOptions): InductResult {
 /**
  * Best-effort short repo name from a git remote URL.
  *
- *   git@github.com:owner/lore-mcp.git  → lore-mcp
- *   https://github.com/owner/lore-mcp  → lore-mcp
+ *   git@github.com:owner/loreguard-mcp.git  → loreguard-mcp
+ *   https://github.com/owner/loreguard-mcp  → loreguard-mcp
  *   https://gitlab.com/g/sub/proj.git  → proj
  *
  * Returns null when the input doesn't look like a remote we can parse;

@@ -228,16 +228,16 @@ describe("shortInductionQuestions (--short subset)", () => {
 describe("shortRepoNameFromRemote", () => {
   it("parses SSH form", () => {
     expect(
-      shortRepoNameFromRemote("git@github.com:owner/lore-mcp.git"),
-    ).toBe("lore-mcp");
+      shortRepoNameFromRemote("git@github.com:owner/loreguard-mcp.git"),
+    ).toBe("loreguard-mcp");
   });
   it("parses HTTPS form, with or without .git", () => {
     expect(
-      shortRepoNameFromRemote("https://github.com/owner/lore-mcp.git"),
-    ).toBe("lore-mcp");
+      shortRepoNameFromRemote("https://github.com/owner/loreguard-mcp.git"),
+    ).toBe("loreguard-mcp");
     expect(
-      shortRepoNameFromRemote("https://github.com/owner/lore-mcp"),
-    ).toBe("lore-mcp");
+      shortRepoNameFromRemote("https://github.com/owner/loreguard-mcp"),
+    ).toBe("loreguard-mcp");
   });
   it("parses GitLab-style nested groups", () => {
     expect(
