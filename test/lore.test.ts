@@ -834,6 +834,232 @@ describe("core/lore", () => {
     });
   });
 
+  describe("searchLore ranking — column weights + prefix + multi-tag", () => {
+    /**
+     * The column weights (title=3, summary=2, body=1) mean a hit in the
+     * title outranks a hit in the body all else equal. Exercise with two
+     * records that swap which column contains the query term.
+     */
+    it("ranks title hits above body hits for the same query", () => {
+      const titleHit = addLore(db, {
+        title: "Argon2id is the password hash default",
+        summary: "Platform sec ruling.",
+        body: "Use m=64MB.",
+      });
+      addLore(db, {
+        title: "Migration style guide",
+        summary: "Liquibase format.",
+        body: "We migrated from bcrypt to argon2id last year.",
+      });
+      const hits = searchLore(db, { query: "argon2id" });
+      expect(hits.length).toBeGreaterThanOrEqual(2);
+      expect(hits[0]!.id).toBe(titleHit.id);
+    });
+
+    it("prefix mode matches tokens of 3+ chars as prefixes", () => {
+      addLore(db, {
+        title: "API dates must include timezone offsets",
+        summary: "s",
+        body: "b",
+      });
+      // Exact-match mode should not find 'timez' (no such token).
+      expect(searchLore(db, { query: "timez" })).toHaveLength(0);
+      // Prefix mode should.
+      expect(
+        searchLore(db, { query: "timez", prefix: true }).length,
+      ).toBeGreaterThan(0);
+    });
+
+    it("prefix mode leaves <3-char tokens as exact-match (no slow 1-char prefix)", () => {
+      addLore(db, {
+        title: "AB convention example",
+        summary: "s",
+        body: "b",
+      });
+      // 'ab' is 2 chars — still exact, hits the record.
+      const exact = searchLore(db, { query: "ab", prefix: true });
+      expect(exact.length).toBeGreaterThan(0);
+    });
+
+    it("tag accepts a string array — ANY-of semantics", () => {
+      const a = addLore(db, {
+        title: "auth ruling",
+        summary: "s",
+        body: "b",
+        tags: ["security"],
+      });
+      const b = addLore(db, {
+        title: "db ruling",
+        summary: "s",
+        body: "b",
+        tags: ["db"],
+      });
+      const c = addLore(db, {
+        title: "frontend ruling",
+        summary: "s",
+        body: "b",
+        tags: ["frontend"],
+      });
+      const hits = searchLore(db, { tag: ["security", "db"] });
+      const ids = hits.map((h) => h.id);
+      expect(ids).toContain(a.id);
+      expect(ids).toContain(b.id);
+      expect(ids).not.toContain(c.id);
+    });
+
+    it("single-tag string still works (back-compat)", () => {
+      addLore(db, {
+        title: "x",
+        summary: "s",
+        body: "b",
+        tags: ["security"],
+      });
+      const hits = searchLore(db, { tag: "security" });
+      expect(hits.length).toBe(1);
+    });
+  });
+
+  describe("conflict surfacing in searchLore", () => {
+    /**
+     * Two active records sharing a repo and a tag are flagged in each
+     * other's `possibleConflicts` array. The intent is to make a "two
+     * authoritative-looking records disagree" situation visible to the
+     * agent without an extra round trip.
+     */
+    it("flags two active records sharing repo + tag", () => {
+      const a = addLore(db, {
+        title: "Password hash policy A",
+        summary: "Use Argon2id",
+        body: "B",
+        repos: ["auth-svc"],
+        tags: ["security"],
+      });
+      const b = addLore(db, {
+        title: "Password hash policy B",
+        summary: "Use scrypt",
+        body: "B",
+        repos: ["auth-svc"],
+        tags: ["security"],
+      });
+      const hits = searchLore(db, { query: "password hash policy" });
+      const ha = hits.find((h) => h.id === a.id);
+      const hb = hits.find((h) => h.id === b.id);
+      expect(ha?.possibleConflicts).toContain(b.id);
+      expect(hb?.possibleConflicts).toContain(a.id);
+    });
+
+    it("does not flag when only the repo overlaps", () => {
+      addLore(db, {
+        title: "Migration policy",
+        summary: "x",
+        body: "B",
+        repos: ["billing-svc"],
+        tags: ["migrations"],
+      });
+      addLore(db, {
+        title: "Migration testing checklist",
+        summary: "x",
+        body: "B",
+        repos: ["billing-svc"],
+        tags: ["testing"], // different tag
+      });
+      const hits = searchLore(db, { query: "migration" });
+      for (const h of hits) {
+        expect(h.possibleConflicts ?? []).toEqual([]);
+      }
+    });
+
+    it("does not flag when only the tag overlaps", () => {
+      addLore(db, {
+        title: "Cookie policy A",
+        summary: "x",
+        body: "B",
+        repos: ["frontend"],
+        tags: ["security"],
+      });
+      addLore(db, {
+        title: "Cookie policy B",
+        summary: "x",
+        body: "B",
+        repos: ["api"], // different repo
+        tags: ["security"],
+      });
+      const hits = searchLore(db, { query: "cookie policy" });
+      for (const h of hits) {
+        expect(h.possibleConflicts ?? []).toEqual([]);
+      }
+    });
+
+    it("does not flag drafts, deprecated, or superseded records", () => {
+      const active = addLore(db, {
+        title: "Active webhook policy",
+        summary: "x",
+        body: "B",
+        repos: ["payments-svc"],
+        tags: ["webhooks"],
+      });
+      const deprecated = addLore(db, {
+        title: "Old webhook policy",
+        summary: "x",
+        body: "B",
+        repos: ["payments-svc"],
+        tags: ["webhooks"],
+      });
+      deprecateLore(db, deprecated.id);
+      const hits = searchLore(db, {
+        query: "webhook policy",
+        includeDeprecated: true,
+      });
+      const ha = hits.find((h) => h.id === active.id);
+      // deprecated co-result shouldn't trigger a conflict
+      expect(ha?.possibleConflicts ?? []).toEqual([]);
+    });
+
+    it("populates possibleConflicts for a 3-way overlap correctly", () => {
+      const a = addLore(db, {
+        title: "Caching policy A",
+        summary: "x",
+        body: "B",
+        repos: ["api"],
+        tags: ["caching"],
+      });
+      const b = addLore(db, {
+        title: "Caching policy B",
+        summary: "x",
+        body: "B",
+        repos: ["api"],
+        tags: ["caching"],
+      });
+      const c = addLore(db, {
+        title: "Caching policy C",
+        summary: "x",
+        body: "B",
+        repos: ["api"],
+        tags: ["caching"],
+      });
+      const hits = searchLore(db, { query: "caching policy" });
+      const ha = hits.find((h) => h.id === a.id);
+      const hb = hits.find((h) => h.id === b.id);
+      const hc = hits.find((h) => h.id === c.id);
+      // Each should list the other two.
+      expect(ha?.possibleConflicts?.sort()).toEqual([b.id, c.id].sort());
+      expect(hb?.possibleConflicts?.sort()).toEqual([a.id, c.id].sort());
+      expect(hc?.possibleConflicts?.sort()).toEqual([a.id, b.id].sort());
+    });
+
+    it("does not flag a single result with no other co-results", () => {
+      addLore(db, {
+        title: "Lonely policy",
+        summary: "x",
+        body: "B",
+        repos: ["solo"],
+        tags: ["solo"],
+      });
+      const hits = searchLore(db, { query: "Lonely policy" });
+      expect(hits[0]?.possibleConflicts ?? []).toEqual([]);
+    });
+  });
+
   describe("exportLore", () => {
     /**
      * Round-trip-ish coverage: the export should reflect the same

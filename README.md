@@ -289,7 +289,7 @@ result.)
 
 Claude sees three tools:
 
-- `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries
+- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes; results carry `possibleConflicts: string[]` when two active records share repo + tag — an overlap heuristic, not contradiction detection)
 - `get_lore({ id })` — full body of one record
 - `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
 
@@ -372,18 +372,72 @@ LLM prompt — once retrieved, the content is in the agent's context.
 A single SQLite file at `~/.lore/lore.db` (mode `0600`). That's the entire
 storage layer.
 
-**For v0.1, SQLite is the source of truth.** Team sync is intentionally
-manual: back up or copy the DB yourself if you need it on another machine.
-Markdown import (PR-reviewable `.lore/*.md` files as canonical, SQLite as
-local index) is planned for v0.2 but not required for local use.
+**For v0.1, SQLite is the canonical source of truth.** Markdown files
+under `.lore/` are a *sync artifact*: PR-reviewable, committable to the
+repo, and round-trippable with `lore sync`, but the live record lives
+in SQLite. Drop one machine's DB and rebuild it by importing your
+team's `.lore/` directory.
 
 Override the path with `LORE_DB=/some/other.db` for tests or alternate
 profiles.
 
+### Team sync — Markdown round-trip
+
+`lore sync export <dir>` writes one `.md` file per record into `<dir>`
+(typically `.lore/` in the repo). `lore sync import <dir>` is the
+inverse — every file is upserted by id. Combined with normal git
+workflow, the PR review *is* the trust gate: a record in `.lore/` got
+there through code review.
+
+```bash
+lore sync export .lore               # active + non-restricted by default
+lore sync export .lore --include-deprecated --include-superseded
+lore sync export .lore --clean       # remove stale <id>.md files first
+lore sync import .lore               # upsert every .md back into SQLite
+lore sync import .lore --include-restricted
+```
+
+Each `.md` is YAML-frontmatter + Markdown body. Frontmatter is
+deterministic (fixed field order) so re-exporting a clean DB produces
+byte-identical files — your diffs stay tight.
+
+Defaults are conservative:
+
+- **Restricted records are excluded** from export by default. Committing
+  restricted titles to git is usually a mistake; if your repo is private
+  and you want the history, pass `--include-restricted`.
+- **Drafts are excluded** from export by default. They haven't been
+  reviewed yet; `lore review` is the gate, not `git push`.
+- **Imports respect the file's declared `status`.** If a `.md` says
+  `status: active`, it lands as active — the PR is the review gate.
+  Restricted-record files are skipped on import unless
+  `--include-restricted` is set.
+- Files without frontmatter, or missing required fields (`id`, `title`,
+  `summary`, `status`), are skipped with a reason — `lore sync import`
+  never crashes on a malformed file.
+
+A few things `lore sync` deliberately does **not** do:
+
+- **`lore sync export` is not a mirror.** It overwrites the `<id>.md`
+  files for records being exported, but does not remove `.md` files
+  that have no corresponding record. Pass `--clean` if you want a
+  deterministic mirror; otherwise, clear the directory first.
+- **`lore sync import` is upsert-only.** It creates new records and
+  updates existing ones by id. It does **not** delete local records
+  that are absent from the directory. If your team has removed a
+  record from `.lore/`, use `lore delete <id>` locally as well.
+- **The frontmatter parser is intentionally small** — flat scalars,
+  ISO dates, booleans, and string arrays only. Treat the generated
+  format as canonical; if you hand-edit a `.md`, keep the structure
+  the same.
+
+`lore export --json` still exists for one-file JSON backup and
+inspection; `lore sync` is for the version-controlled team flow.
+
 ### Inspect / back up your lore
 
 `lore export` writes the DB as a single JSON document so you can read,
-diff, commit, or copy it without touching SQLite directly:
+diff, copy, or pipe it without touching SQLite directly:
 
 ```bash
 lore export                              # stdout, active + non-restricted
@@ -393,8 +447,7 @@ lore export --include-drafts --include-deprecated --include-superseded --include
 
 Envelope: `{ schemaVersion: 1, exportedAt, records: [Lore, ...] }`. Stable
 ordering by `updatedAt desc` with an `id asc` tiebreak — two exports of
-the same DB diff cleanly. Import is not implemented yet; for v0.1 the
-SQLite file remains the source of truth.
+the same DB diff cleanly.
 
 ## Security
 
