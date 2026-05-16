@@ -56,10 +56,13 @@ lore review            # list pending drafts
 lore approve <id>      # promote draft → active
 lore deprecate <id>    # mark deprecated (still findable with a flag)
 lore supersede <old> --with <new>
+lore verify <id>       # bump lastVerifiedAt and clear stale warning
 ```
 
-This is the poisoning-prevention guard: agents can suggest knowledge, but
-they can't make future agents trust it.
+This is the poisoning-prevention guard: **agents can suggest knowledge, but
+only humans (via the CLI) can approve, deprecate, or supersede records.**
+The MCP server deliberately exposes no `approve` tool — agents cannot
+promote their own suggestions.
 
 ## Search
 
@@ -72,6 +75,28 @@ lore show <id>
 CLI search returns the compact `LoreSummary` (no body) by default. `lore show`
 fetches the full body. Same contract as the MCP tools.
 
+The search payload looks like this — title, summary, scope, trust signals,
+no body:
+
+```json
+{
+  "id": "7vk3qm9b",
+  "title": "Argon2id is the password hash default",
+  "summary": "Platform security ruling. Bcrypt out.",
+  "status": "active",
+  "confidence": "high",
+  "source": "https://example.com/adrs/14",
+  "repos": ["auth-svc", "payments-svc"],
+  "tags": ["passwords", "security"],
+  "stale": false,
+  "updatedAt": "2026-02-10T09:31:00.000Z"
+}
+```
+
+That's typically 100–200 tokens. The full body lives in `get_lore({ id })`
+and is only fetched when the summary isn't enough — that's where the
+token saving comes from.
+
 ## Hook it up to Claude Code
 
 ```bash
@@ -80,9 +105,12 @@ claude mcp add lore lore-mcp
 
 Claude sees three tools:
 
-- `search_lore({ query, repo?, tag?, since?, includeDrafts?, includeDeprecated?, includeRestricted? })` — returns brief summaries
+- `search_lore({ query, repo?, tag?, updatedAfter?, includeDrafts?, includeDeprecated?, includeRestricted?, limit? })` — returns brief summaries
 - `get_lore({ id })` — full body of one record
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence? })` — agent creates a draft
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft
+
+The MCP surface is intentionally narrow. Agents can read and suggest;
+**approval, deprecation, and supersession are CLI-only**.
 
 Prompt suggestion (drop in your `CLAUDE.md`):
 
@@ -101,7 +129,7 @@ Every record carries lifecycle + provenance metadata so retrieval is honest:
 |-------|---------|
 | `status` | `draft` (agent, awaiting review), `active` (canonical), `deprecated`, `superseded` |
 | `source` | URL: PR / ADR / incident / ticket. Records without a source are lower-trust. |
-| `confidence` | `low` \| `medium` \| `high`. Default `medium`. |
+| `confidence` | `low` \| `medium` \| `high`. Default `medium`. *Agent-suggested records cannot claim `high`. Records without a `source` cannot be `high` — invariant enforced at write time.* |
 | `reviewAfter` | ISO date; if past, search flags `stale: true`. |
 | `supersededBy` | ID of the record that replaces this one. |
 | `restricted` | Excluded from search unless `includeRestricted: true`. |
@@ -114,8 +142,15 @@ LLM prompt — once retrieved, the content is in the agent's context.
 ## Where data lives
 
 A single SQLite file at `~/.lore/lore.db` (mode `0600`). That's the entire
-storage layer. Back it up, sync it via S3, copy it between machines — whatever
-you want.
+storage layer.
+
+**For v0.1, SQLite is the source of truth.** Team sync is intentionally
+manual: back up or copy the DB yourself if you need it on another machine.
+Markdown import (PR-reviewable `.lore/*.md` files as canonical, SQLite as
+local index) is planned for v0.2 but not required for local use.
+
+Override the path with `LORE_DB=/some/other.db` for tests or alternate
+profiles.
 
 ## Security
 
