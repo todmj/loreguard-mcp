@@ -170,6 +170,18 @@ COMMANDS
                             bullets. Each candidate becomes a DRAFT
                             tagged 'imported' — review with
                             \`loreguard review\`.
+  hooks install [--project] [--dry-run]
+                            Wire the Claude Code Stop-hook for
+                            session-end review nudges. Writes
+                            .claude/settings.json so when Claude is
+                            about to stop, the hook checks for pending
+                            drafts and (once per session) asks the
+                            user whether to triage them. Opt-in.
+  hooks review-nudge        Internal — invoked by the Stop hook.
+                            Reads Claude hook JSON on stdin; emits
+                            block-JSON to stdout when drafts are
+                            pending and this session hasn't been
+                            nudged yet.
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -1380,6 +1392,96 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
+async function cmdHooks(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  if (sub !== "install" && sub !== "review-nudge") {
+    process.stderr.write(
+      "loreguard: hooks requires a subcommand — `loreguard hooks install [--project]` or `loreguard hooks review-nudge`\n",
+    );
+    return 2;
+  }
+  const {
+    decideNudge,
+    markSessionNudged,
+    mergeHookSettings,
+    parseHookInput,
+    projectHookSettingsPath,
+    readSettingsFile,
+    sessionAlreadyNudged,
+  } = await import("./hooks.js");
+  if (sub === "install") {
+    const dryRun = getBool(args.flags, "dry-run");
+    const path = projectHookSettingsPath();
+    const existing = readSettingsFile(path);
+    const next = mergeHookSettings(existing);
+    if (existing === next) {
+      process.stdout.write(
+        `loreguard hooks install: ${path} already contains the loreguard Stop hook (no changes)\n`,
+      );
+      return 0;
+    }
+    if (dryRun) {
+      process.stdout.write(`--- would write ${path} ---\n`);
+      process.stdout.write(next);
+      process.stdout.write("--- (dry-run — nothing written) ---\n");
+      return 0;
+    }
+    const { dirname } = await import("node:path");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, next);
+    process.stdout.write(
+      `loreguard hooks install: wired Stop hook into ${path}\n`,
+    );
+    return 0;
+  }
+  // review-nudge: invoked by the Stop hook. Read stdin, check drafts,
+  // emit JSON. Never throw — Claude will surface our exit code as a
+  // hook failure to the user, which is louder than the bug warrants.
+  try {
+    const stdin = await readAllStdin();
+    const { sessionId } = parseHookInput(stdin);
+    const db = openDb();
+    try {
+      const pending = (
+        db.prepare(
+          "SELECT COUNT(*) AS n FROM lore WHERE status = 'draft'",
+        ).get() as { n: number }
+      ).n;
+      const nudgeEveryTime =
+        process.env["LOREGUARD_REVIEW_NUDGE_EVERY_TIME"] === "1";
+      const out = decideNudge({
+        pendingDraftCount: pending,
+        sessionAlreadyNudged: sessionAlreadyNudged(sessionId),
+        nudgeEveryTime,
+      });
+      if (out.decision === "block") {
+        markSessionNudged(sessionId);
+        process.stdout.write(JSON.stringify(out));
+      }
+      // else: silent pass — Claude stops normally.
+      return 0;
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    // Don't surface — the hook failing should NOT block Claude
+    // stopping or break the user's workflow. Log to stderr (Claude
+    // shows hook stderr but doesn't interpret it as a block).
+    process.stderr.write(
+      `loreguard hooks review-nudge: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 0;
+  }
+}
+
+async function readAllStdin(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  let buf = "";
+  for await (const chunk of process.stdin) buf += chunk;
+  return buf;
+}
+
 async function cmdIngestMd(
   args: ReturnType<typeof parseArgs>,
 ): Promise<number> {
@@ -1543,6 +1645,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdStats(parsed);
       case "ingest-md":
         return await cmdIngestMd(parsed);
+      case "hooks":
+        return await cmdHooks(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":
