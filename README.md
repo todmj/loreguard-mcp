@@ -1,19 +1,22 @@
 # loreguard
 
-> **Reviewed project memory for coding agents.**
-> Agents can suggest reusable project knowledge; humans decide what
-> becomes trusted lore.
+> **Team-ratified knowledge for AI coding agents.**
+> Memory says *what one session believes*; loreguard says *what the team
+> has reviewed and approved*.
 > Local SQLite-backed MCP server + CLI.
 
-Every AI coding session starts cold. Agents re-read the same files, rediscover
-the same conventions, and burn tokens on context you already taught them last
-week. `loreguard` gives them a local memory of *lore* — small, reviewed records
-of conventions, decisions, and gotchas — so they retrieve the short version
-when it matters instead of rediscovering it.
+Most agent-memory tools store what an individual session learned. That's
+useful, but it's also the failure mode: a confident-sounding agent
+recites something it inferred once and got wrong. **Loreguard is the
+opposite primitive** — it's the shared record of conventions, decisions,
+deprecated patterns, gotchas, and incident lessons that a team has
+*ratified*. Agents can suggest; humans approve; the team gets one
+trusted record per topic instead of N parallel beliefs.
 
-`CLAUDE.md` is always-on context (every prompt pays for it). **`loreguard` is
-just-in-time context** — agents call `search_lore` only when a task warrants
-it, and get a compact summary back. Full body only on demand.
+`CLAUDE.md` is always-on context (every prompt pays for it). **`loreguard`
+is just-in-time, team-ratified context** — agents call `search_lore` only
+when a task warrants it and get a compact summary of what the team has
+already decided, rather than reasoning from scratch.
 
 ## Install
 
@@ -402,23 +405,33 @@ reusable convention, gotcha, decision, or service-specific rule that
 would help future agents. Do not save temporary task state or speculation.
 ```
 
-## Why not just CLAUDE.md?
+## Why not just CLAUDE.md? And why not generic agent memory?
 
-Use `CLAUDE.md` for **always-on** rules the agent should see every session
-— code style, the language you're working in, what to grep for first.
-That context is paid for on every prompt.
+Three things that look similar but are not:
 
-Use `loreguard` for **just-in-time** context that's only relevant sometimes:
-repo conventions, service gotchas, incident lessons, migration rules,
-security decisions, cross-repo knowledge. The agent calls `search_lore`
-only when the task warrants it and gets a compact summary back. Full
-body only on demand via `get_lore`. The primary promise is correctness
-(reviewed knowledge, trust signals, no agent-promoted memory); reduced
-repeated context loading is a consequence — real when records stay
-short and high-signal, lost when they don't.
+| | What it is | What it's for | Trust source |
+|---|---|---|---|
+| `CLAUDE.md` | Always-on instructions, paid for on every prompt | Rules that apply *every* session — code style, language conventions, what to grep first | You wrote it; it lives in your repo |
+| Generic agent memory | Cross-session recall of *what one session inferred* | Personal continuity ("remember I prefer X") | A single session believed it |
+| `loreguard` | On-demand retrieval of *what the team has reviewed and approved* | Repo-specific decisions, gotchas, migrations, incident lessons | A human ratified it via `loreguard review` |
 
-If a rule applies to every session, it belongs in `CLAUDE.md`. If it
-applies only when you're touching `payments-svc`, it belongs in `loreguard`.
+Generic memory tracks **what I believe**. Loreguard tracks **what the team
+has ratified**. Both can store the sentence "Use Argon2id, not bcrypt" —
+the difference is whether a future agent should trust it without
+checking, and whether two agents working in parallel will see the same
+answer. Memory says yes-and-yes-but-only-for-this-session; loreguard
+says yes-and-everywhere, because a human reviewed it and approved it.
+
+That distinction matters when there's *disagreement*: if memory says X
+and the code says NOT X, the agent has no anchor. If loreguard says X
+and the code says NOT X, the agent has a ratified record to flag the
+conflict against — and a path (`suggest_lore`, then human review) to
+update the team record if the code is right.
+
+Rule of thumb: if a fact applies every session, put it in `CLAUDE.md`. If
+it's an individual preference for one user, put it in your agent's
+memory. If a *team* should agree on it across N repos and M agent
+sessions, put it in loreguard.
 
 ## Trust model
 
