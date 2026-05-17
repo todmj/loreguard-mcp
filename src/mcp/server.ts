@@ -275,10 +275,13 @@ export async function runMcpServer(): Promise<void> {
         summary: z
           .string()
           .min(1)
-          .max(500)
+          .max(800)
           .describe(
-            "One-paragraph summary. This is what most search results show. " +
-              "Should stand alone without the body — assume readers won't drill in.",
+            "One-paragraph summary (≤ 800 chars). This is what most search " +
+              "results show — should stand alone without the body; assume " +
+              "readers won't drill in. Aim for the *why* and the *what*, " +
+              "not just the *what*; a longer cap exists so search hits can " +
+              "be self-contained without a follow-up get_lore call.",
           ),
         body: z
           .string()
