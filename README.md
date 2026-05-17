@@ -312,6 +312,44 @@ first in the file. Anything richer (tables, nested formatting, YAML
 frontmatter) is out of scope; hand-edit during review if it matters.
 Items shorter than 30 characters are skipped as noise.
 
+### Step 5 — (optional) session-end nudge so drafts don't rot
+
+The hardest failure mode in any team-memory tool isn't capture —
+it's the queue of unreviewed drafts that quietly accumulates and
+never gets triaged. `loreguard hooks install` wires a Claude Code
+**Stop hook** so when Claude is about to end a session it asks
+"there are N pending drafts from this session — review now or leave
+for later?" once per session.
+
+```bash
+loreguard hooks install                # writes .claude/settings.json (project-scope)
+loreguard hooks install --dry-run      # preview the merge without writing
+```
+
+Behaviour, in plain prose:
+
+- The hook fires on Claude's `Stop` event (session about to end).
+- If there are zero pending drafts: silent pass — Claude stops normally.
+- If there are drafts and **this session hasn't been nudged yet**:
+  emits `{ decision: "block", reason: "There are 2 pending lore
+  drafts from this session. Ask the user if they want to run
+  `loreguard review` now, or leave them for later. Don't review
+  without asking — the user is the gate." }`. Claude surfaces the
+  prompt; you decide.
+- Already nudged this session? Silent pass. No nag loops.
+
+The per-session "already nudged" state is a zero-byte marker file
+under `~/.loreguard/hooks/session-<id>.nudged` (Claude provides
+`session_id` in the hook payload). Set
+`LOREGUARD_REVIEW_NUDGE_EVERY_TIME=1` to nudge every time instead.
+
+The hook is **opt-in** and **project-scoped** — `loreguard hooks
+install` modifies `.claude/settings.json` in the current directory.
+If that file has hooks for other tools, they're preserved (the
+merge is additive and idempotent — running install twice doesn't
+double-add). To turn it off, remove the corresponding `Stop` block
+from `.claude/settings.json`.
+
 > **What not to store**
 >
 > Don't put secrets, credentials, personal data, patient data, or
