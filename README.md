@@ -137,11 +137,13 @@ useful local memory the next time they touch it:
 ```bash
 cd ~/code/payments-svc
 
-# 1. Cold-start: 10-question interview that turns answers into DRAFT lore.
-loreguard induct                  # use --short for the 5-question version
+# 1. Cold-start: pick one based on what you have.
+loreguard induct                       # 10-Q interview from scratch
+# - or - if you already have docs:
+loreguard ingest-md ./CLAUDE.md ./docs/adrs/*.md   # one DRAFT per H3 / bullet
 
-# 2. Triage the drafts you just created.
-loreguard review                  # [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit
+# 2. Triage the drafts.
+loreguard review                       # [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit
 
 # 3. Teach the agent to actually call search_lore.
 loreguard print-claude-instructions >> CLAUDE.md
@@ -149,13 +151,20 @@ loreguard print-claude-instructions >> CLAUDE.md
 # 4. (Optional) Commit team lore via PR review.
 loreguard sync export .loreguard
 git add .loreguard && git commit -m "seed loreguard"
+
+# 5. (Optional) Make sure drafts don't rot.
+loreguard hooks install                # opt-in Claude Stop-hook
 ```
 
-Steps 1–2 are the human-driven cold-start: you answer questions, then
-promote the keepers. Step 3 wires the agent so it queries lore on the
-next prompt — without this, the MCP server is installed but unused.
-Step 4 is optional and only matters if you want teammates to pick up
-the same records via `loreguard sync import .loreguard`.
+Step 1 is the cold-start — interview from scratch (`induct`) or
+bulk-import what you already have (`ingest-md`). They're not mutually
+exclusive; many teams do both. Step 2 promotes the keepers. Step 3
+wires the agent so it queries lore on the next prompt — without
+this, the MCP server is installed but unused. Step 4 is optional and
+only matters if you want teammates to pick up the same records via
+`loreguard sync import .loreguard`. Step 5 is opt-in: installs a
+Claude Stop-hook that nudges you to review pending drafts at session
+end so they don't pile up forgotten.
 
 The rest of this section is the detail on each step.
 
@@ -229,6 +238,39 @@ The skill needs the `loreguard-mcp` server already configured (so
 Use the CLI for offline / scripted cold-starts; use the skill when you
 want the agent to do the repo-reading work for you.
 
+#### Bulk-import alternative — `loreguard ingest-md`
+
+If you **already have** the knowledge written down (CLAUDE.md
+sections, ADR files, MIGRATION notes, incident postmortems),
+`induct`/`/loreguard-onboard` are the wrong shape — they ask
+questions you've already answered. `loreguard ingest-md` walks a
+glob, splits each file by H3 subsections or top-level bullets, and
+creates one DRAFT per candidate. Same `loreguard review` queue
+gates everything before it becomes canonical.
+
+```bash
+loreguard ingest-md ./CLAUDE.md --section "Things That Catch People Out"
+loreguard ingest-md ./docs/adrs/*.md --tag decisions
+loreguard ingest-md ./docs/*.md --source https://github.com/org/repo --dry-run
+```
+
+Flags:
+
+- `--section "Heading Text"` — scope to one heading (case-insensitive substring match); content from that heading until the next same-or-higher-level heading
+- `--tag <name>` — extra tag on every drafted record (repeatable; always layered on top of `imported` and `imported-from:<file-basename>`)
+- `--repo <name>` — repo scope (repeatable; falls back to the auto-detected name if omitted)
+- `--source <url>` — base source URL; if it's a GitHub blob URL, the per-record source becomes `<base>#L<sourceLine>` so the reviewer can jump straight to the right line
+- `--dry-run` — print what would be drafted; insert nothing
+
+Splitting is intentionally simple — H3 or bullets, whichever appears
+first in the file. Anything richer (tables, nested formatting, YAML
+frontmatter) is out of scope; hand-edit during review if it matters.
+Items shorter than 30 characters are skipped as noise.
+
+The three cold-start paths aren't mutually exclusive — many teams do
+`ingest-md` to seed bulk material then `induct` (or
+`/loreguard-onboard`) for the things that *aren't* written down yet.
+
 ### Step 2 — `loreguard review` (triage drafts)
 
 Drafts are hidden from default search until a human promotes them.
@@ -282,35 +324,6 @@ their local SQLite. The PR review is the trust gate — see
 [Team sync — Markdown round-trip](#team-sync--markdown-round-trip)
 for the full semantics (safe-upsert, `--force`, `--dry-run`, and
 what's excluded by default).
-
-### Bulk-import from existing docs — `loreguard ingest-md`
-
-The induct interview is the human-driven cold-start; **`ingest-md` is
-the automated companion** for teams that already have the knowledge
-written down (CLAUDE.md sections, ADR files, MIGRATION notes,
-incident postmortems). Walks a glob, splits each Markdown file by H3
-subsections or top-level bullets, and creates one DRAFT
-`suggest_lore` per candidate — same `loreguard review` queue gates
-everything before it becomes canonical.
-
-```bash
-loreguard ingest-md ./CLAUDE.md --section "Things That Catch People Out"
-loreguard ingest-md ./docs/adrs/*.md --tag decisions
-loreguard ingest-md ./docs/*.md --source https://github.com/org/repo --dry-run
-```
-
-Flags:
-
-- `--section "Heading Text"` — scope to one heading (case-insensitive substring match); content from that heading until the next same-or-higher-level heading
-- `--tag <name>` — extra tag on every drafted record (repeatable; always layered on top of `imported` and `imported-from:<file-basename>`)
-- `--repo <name>` — repo scope (repeatable; falls back to the auto-detected name if omitted)
-- `--source <url>` — base source URL; if it's a GitHub blob URL, the per-record source becomes `<base>#L<sourceLine>` so the reviewer can jump straight to the right line
-- `--dry-run` — print what would be drafted; insert nothing
-
-Splitting is intentionally simple — H3 or bullets, whichever appears
-first in the file. Anything richer (tables, nested formatting, YAML
-frontmatter) is out of scope; hand-edit during review if it matters.
-Items shorter than 30 characters are skipped as noise.
 
 ### Step 5 — (optional) session-end nudge so drafts don't rot
 
@@ -514,7 +527,7 @@ Claude sees five tools:
 - `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
 - `get_lore({ id })` — full body of one record.
 - `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Over-cap inputs (`title > 200`, `summary > 800`) return a **structured error** `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` instead of failing through zod's max-cap path — the agent can paste `suggested_cut` back as a corrected retry without a human round-trip. Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits).
-- `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. Restricted existing records are env-gated (`LOREGUARD_ALLOW_RESTRICTED_MCP=1`) the same way as `get_lore`. See [ADR-003](#) for the storage-shape rationale.
+- `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. Restricted existing records are env-gated (`LOREGUARD_ALLOW_RESTRICTED_MCP=1`) the same way as `get_lore`. See [`docs/adr/ADR-003-conflict-records-shape.md`](docs/adr/ADR-003-conflict-records-shape.md) for the storage-shape rationale.
 - `record_absence({ query, reason, repo?, expiresInDays? })` — agent searched, found nothing, AND has confirmed the gap is real and durable (not just a phrasing miss). Records a **self-expiring** marker (default 14 days; max 365) so the next `search_lore` on the same normalised query surfaces `absence_marker: { reason, ... }` instead of returning empty again. **Don't auto-call this on every zero-hit search** — only when the absence is itself the finding. No review gate (low-stakes, time-bounded — distinct from drafts). Markers are normalised order-independently and case-insensitively so `"payments-svc retry policy"` and `"Retry POLICY payments-svc"` share a marker. Repo-scoped markers shadow global ones when the search is also repo-scoped.
 
 The MCP surface is intentionally narrow. Agents can read, suggest,
