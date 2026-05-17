@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { audit } from "../core/audit.js";
+import { findActiveAbsence, recordAbsence } from "../core/absence.js";
 import {
   findPossibleDuplicates,
   getLore,
@@ -160,11 +161,36 @@ export async function runMcpServer(): Promise<void> {
         // possibleConflicts is a CLI-only heuristic for human triage —
         // see stripPossibleConflicts for the rationale.
         const mcpHits = stripPossibleConflicts(hits);
+        // Verified-absence: when there are no hits AND the agent
+        // explicitly searched (not a blank "list recent" call), surface
+        // any active marker so the next agent knows "we checked, known
+        // gap" rather than re-discovering the same nothing. Absent the
+        // query we have nothing to match a marker against.
+        let absenceMarker: ReturnType<typeof findActiveAbsence> = null;
+        if (mcpHits.length === 0 && args.query) {
+          absenceMarker = findActiveAbsence(db, {
+            query: args.query,
+            repo: args.repo,
+          });
+        }
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ results: mcpHits }, null, 2),
+              text: JSON.stringify(
+                absenceMarker
+                  ? {
+                      results: mcpHits,
+                      absence_marker: {
+                        reason: absenceMarker.reason,
+                        recordedAt: absenceMarker.recordedAt,
+                        expiresAt: absenceMarker.expiresAt,
+                      },
+                    }
+                  : { results: mcpHits },
+                null,
+                2,
+              ),
             },
           ],
         };
@@ -410,6 +436,111 @@ export async function runMcpServer(): Promise<void> {
         return {
           isError: true,
           content: [{ type: "text", text: `suggest_lore failed: ${msg}` }],
+        };
+      }
+    },
+  );
+
+  // ---- record_absence -------------------------------------------------
+  server.registerTool(
+    "record_absence",
+    {
+      title: "Record a verified-absence marker (no lore on this topic)",
+      description:
+        "Use when you've searched for a topic, found nothing, AND you've " +
+        "confirmed the gap is real and durable (not just a phrasing miss). " +
+        "Creates a self-expiring marker that future search_lore calls " +
+        "on the same normalised query will surface as 'reason: ...' " +
+        "alongside an empty results array — so the next agent knows " +
+        "it's an acknowledged gap rather than re-discovering nothing.\n\n" +
+        "Don't use this on every zero-hit search — that would pollute " +
+        "the marker pool. Use it when the absence is itself a finding.",
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe(
+            "The query you ran that returned zero hits. Normalised at " +
+              "write time (lowercase, sorted tokens) so re-phrasings match.",
+          ),
+        reason: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe(
+            "One-sentence explanation of WHY this is a known gap " +
+              "(e.g. 'team has no policy yet; decided ad hoc per incident').",
+          ),
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            "Optional repo scope. Repo-scoped markers shadow global ones " +
+              "when search_lore is called with the same repo.",
+          ),
+        expiresInDays: z
+          .number()
+          .int()
+          .min(1)
+          .max(365)
+          .optional()
+          .describe(
+            "Days until the marker auto-expires. Default 30. Stale 'we " +
+              "checked' claims age out so they don't become permanent.",
+          ),
+      },
+    },
+    async (args) => {
+      const sanitised: Record<string, unknown> = {
+        queryChars: args.query.length,
+        reasonChars: args.reason.length,
+        repo: args.repo,
+        expiresInDays: args.expiresInDays,
+      };
+      try {
+        const result = recordAbsence(db, {
+          query: args.query,
+          reason: args.reason,
+          repo: args.repo,
+          expiresInDays: args.expiresInDays,
+          recordedBy: "agent",
+        });
+        audit({
+          tool: "record_absence",
+          request: sanitised,
+          resultCount: 1,
+          resultIds: [result.id],
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  id: result.id,
+                  expiresAt: result.expiresAt,
+                  message:
+                    "Absence marker recorded. Future search_lore calls " +
+                    "matching this normalised query will surface this marker " +
+                    `until ${result.expiresAt}.`,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        audit({
+          tool: "record_absence",
+          request: sanitised,
+          error: msg,
+        });
+        return {
+          isError: true,
+          content: [{ type: "text", text: `record_absence failed: ${msg}` }],
         };
       }
     },

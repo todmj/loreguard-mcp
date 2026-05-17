@@ -3,6 +3,11 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { execSync } from "node:child_process";
 
+import {
+  findActiveAbsence,
+  listAbsences,
+  recordAbsence,
+} from "../core/absence.js";
 import { defaultDbPath, openDb } from "../db/index.js";
 import type { LoreConfidence } from "../db/types.js";
 import {
@@ -138,6 +143,29 @@ COMMANDS
                             review window). Drafts only — promote via
                             \`loreguard review\`. Use --repo to override the
                             auto-detected name (repeatable).
+  absent record "<query>" --reason "..." [--repo X] [--expires-days 30]
+                            Record a verified-absence marker: "we
+                            checked, the team has no policy on this".
+                            When future search_lore returns zero hits
+                            on the same normalised query, the response
+                            includes this marker so the agent knows
+                            it's an acknowledged gap. Self-expires
+                            (default 30 days).
+  absent list [--include-expired]
+                            List active absence markers (or all of
+                            them with --include-expired).
+  stats [--top N] [--retire] [--since-days N] [--quiet-for-days N] [--json]
+                            Local read-tracking view: top-cited
+                            records, retirement candidates (active +
+                            zero reads in N days), recent activity.
+                            Opt out of read tracking via
+                            LOREGUARD_NO_TELEMETRY=1.
+  ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run]
+                            Bulk-import drafts from Markdown files.
+                            Splits on H3 subsections or top-level
+                            bullets. Each candidate becomes a DRAFT
+                            tagged 'imported' — review with
+                            \`loreguard review\`.
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -1077,7 +1105,7 @@ async function cmdSetup(args: ReturnType<typeof parseArgs>): Promise<number> {
 }
 
 async function cmdDoctor(): Promise<number> {
-  const { exitCode, checks } = runDoctor();
+  const { exitCode, checks } = await runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
   return exitCode;
 }
@@ -1181,6 +1209,225 @@ function redactTitle(t: string): string {
   return t.slice(0, 47) + "…";
 }
 
+async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  if (sub !== "record" && sub !== "list") {
+    process.stderr.write(
+      "loreguard: absent requires a subcommand — `loreguard absent record \"<query>\" --reason \"...\"` or `loreguard absent list`\n",
+    );
+    return 2;
+  }
+  const db = openDb();
+  try {
+    if (sub === "record") {
+      const query = args.positionals[1];
+      if (!query) {
+        process.stderr.write(
+          "loreguard: absent record requires a query (in quotes)\n",
+        );
+        return 2;
+      }
+      const reason = getString(args.flags, "reason");
+      if (!reason) {
+        process.stderr.write(
+          "loreguard: absent record requires --reason \"...\" explaining the gap\n",
+        );
+        return 2;
+      }
+      const repo = getString(args.flags, "repo");
+      const expiresInDaysRaw = getString(args.flags, "expires-days");
+      const expiresInDays = expiresInDaysRaw
+        ? Math.max(1, Math.min(365, Number(expiresInDaysRaw)))
+        : undefined;
+      const result = recordAbsence(db, {
+        query,
+        reason,
+        repo,
+        expiresInDays,
+        recordedBy: "human",
+      });
+      process.stdout.write(
+        `loreguard: recorded absence marker ${result.id} (expires ${result.expiresAt})\n`,
+      );
+      // Echo what an active search would surface — useful sanity check.
+      const found = findActiveAbsence(db, { query, repo });
+      if (found) {
+        process.stdout.write(
+          `  query normalised to: "${found.query}"${found.repo ? ` (repo: ${found.repo})` : ""}\n`,
+        );
+      }
+      return 0;
+    }
+    const includeExpired = getBool(args.flags, "include-expired");
+    const markers = listAbsences(db, { includeExpired });
+    if (markers.length === 0) {
+      process.stdout.write(
+        includeExpired
+          ? "loreguard: no absence markers recorded\n"
+          : "loreguard: no active absence markers (pass --include-expired to see aged-out ones)\n",
+      );
+      return 0;
+    }
+    for (const m of markers) {
+      const scope = m.repo ? ` [${m.repo}]` : "";
+      const now = new Date().toISOString();
+      const expired = m.expiresAt <= now;
+      const flag = expired ? " (expired)" : "";
+      process.stdout.write(
+        `${m.id}${scope}  "${m.query}"${flag}\n  reason:  ${m.reason}\n  recorded: ${m.recordedAt} by ${m.recordedBy}\n  expires:  ${m.expiresAt}\n\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const { recentActivity, renderStatsReport, retireCandidates, topCitedRecords } =
+    await import("./stats.js");
+  const top = Number(getString(args.flags, "top") ?? "10");
+  const sinceDays = Number(getString(args.flags, "since-days") ?? "90");
+  const quietForDays = Number(getString(args.flags, "quiet-for-days") ?? "180");
+  const wantsJson = getBool(args.flags, "json");
+  const retireOnly = getBool(args.flags, "retire");
+  const db = openDb();
+  try {
+    const retire = retireCandidates(db, { quietForDays });
+    if (retireOnly) {
+      if (wantsJson) {
+        process.stdout.write(JSON.stringify(retire, null, 2) + "\n");
+      } else if (retire.length === 0) {
+        process.stdout.write("loreguard: no retirement candidates\n");
+      } else {
+        for (const r of retire) {
+          const lastSeen = r.lastReadAt
+            ? `last read ${r.lastReadAt.slice(0, 10)}`
+            : "never read";
+          const src = r.hasSource ? "sourced" : "no source";
+          process.stdout.write(
+            `${r.id}  ${r.title}  [${r.confidence}, ${src}, ${lastSeen}]\n`,
+          );
+        }
+      }
+      return 0;
+    }
+    const cited = topCitedRecords(db, { sinceDays, limit: top });
+    const activity = recentActivity(db, { days: sinceDays });
+    if (wantsJson) {
+      process.stdout.write(
+        JSON.stringify(
+          { topCited: cited, retireCandidates: retire, recentActivity: activity },
+          null,
+          2,
+        ) + "\n",
+      );
+    } else {
+      process.stdout.write(renderStatsReport(cited, retire, activity) + "\n");
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdIngestMd(
+  args: ReturnType<typeof parseArgs>,
+): Promise<number> {
+  const { globSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+  const { deriveItemSource, parseMarkdownItems } = await import("./ingest.js");
+  if (args.positionals.length === 0) {
+    process.stderr.write(
+      "loreguard: ingest-md requires at least one file/glob argument\n",
+    );
+    return 2;
+  }
+  const section = getString(args.flags, "section");
+  const extraTags = getStringArray(args.flags, "tag");
+  const repoFlags = getStringArray(args.flags, "repo");
+  const baseSource = getString(args.flags, "source");
+  const dryRun = getBool(args.flags, "dry-run");
+  // Auto-detect repo if user didn't supply one, matching the induct
+  // ladder so a bare `loreguard ingest-md ./CLAUDE.md` Just Works.
+  const repos =
+    repoFlags.length > 0
+      ? repoFlags
+      : (() => {
+          const det = detectRepoName();
+          return det ? [det.name] : [];
+        })();
+  // Expand the globs.
+  const files = new Set<string>();
+  for (const pattern of args.positionals) {
+    try {
+      for (const f of globSync(pattern)) {
+        if (typeof f === "string" && f.endsWith(".md")) files.add(f);
+      }
+    } catch {
+      // Treat the literal as a file path if globSync rejects it.
+      if (pattern.endsWith(".md") && existsSync(pattern)) files.add(pattern);
+    }
+  }
+  if (files.size === 0) {
+    process.stderr.write(
+      `loreguard: ingest-md matched 0 markdown files for ${args.positionals.join(" ")}\n`,
+    );
+    return 1;
+  }
+
+  const db = openDb();
+  let drafted = 0;
+  let scannedFiles = 0;
+  try {
+    for (const file of files) {
+      scannedFiles++;
+      const text = readFileSync(file, "utf8");
+      const items = parseMarkdownItems(text, { section });
+      const fileBase = basename(file).replace(/\.md$/, "");
+      const baseTags = [
+        "imported",
+        `imported-from:${fileBase}`,
+        ...extraTags,
+      ];
+      for (const item of items) {
+        const source = deriveItemSource(baseSource, item.sourceLine);
+        if (dryRun) {
+          process.stdout.write(
+            `  [dry-run] ${file}:L${item.sourceLine}  ${item.title}\n`,
+          );
+        } else {
+          suggestLore(db, {
+            title: item.title,
+            summary: item.summary,
+            body: item.body,
+            tags: baseTags,
+            repos: repos.length > 0 ? repos : undefined,
+            source,
+            // Confidence is clamped to medium on drafts regardless,
+            // but pass low when no source so the surface signals it.
+            confidence: source ? "medium" : "low",
+            author: "ingest-md",
+          });
+        }
+        drafted++;
+      }
+    }
+    if (dryRun) {
+      process.stdout.write(
+        `loreguard: would draft ${drafted} record(s) from ${scannedFiles} file(s) (dry-run — nothing written)\n`,
+      );
+    } else {
+      process.stdout.write(
+        `loreguard: drafted ${drafted} record(s) from ${scannedFiles} file(s). Review with \`loreguard review\`.\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 export async function main(argv: ReadonlyArray<string>): Promise<number> {
   const [, , ...rest] = argv;
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
@@ -1241,6 +1488,12 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdDemo(parsed);
       case "induct":
         return await cmdInduct(parsed);
+      case "absent":
+        return await cmdAbsent(parsed);
+      case "stats":
+        return await cmdStats(parsed);
+      case "ingest-md":
+        return await cmdIngestMd(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":

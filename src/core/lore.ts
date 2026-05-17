@@ -473,7 +473,40 @@ export function getLore(db: Database, id: string): Lore | null {
     | LoreRow
     | undefined;
   if (!row) return null;
+  recordRead(db, [id], "get");
   return rowToLore(row, reposOf(db, id), tagsOf(db, id));
+}
+
+/**
+ * Record one `read` event per id so `loreguard stats` can show what's
+ * pulling weight. Opt-out via either env var so test suites and
+ * privacy-conscious users get a clean store:
+ *
+ *   - `LOREGUARD_NO_TELEMETRY=1` — the deliberate "I don't want this"
+ *     toggle, surfaced in `loreguard doctor`.
+ *   - `LOREGUARD_AUDIT_OFF=1` — already set by test setup to silence
+ *     the audit log; reuse it so test runs also skip read events.
+ *
+ * Local-only. The `events` table is the existing audit ledger; the
+ * 'read' kind is additive. No new schema, no network call.
+ */
+function recordRead(
+  db: Database,
+  ids: ReadonlyArray<string>,
+  via: "search" | "get",
+): void {
+  if (ids.length === 0) return;
+  if (process.env["LOREGUARD_NO_TELEMETRY"]) return;
+  if (process.env["LOREGUARD_AUDIT_OFF"]) return;
+  const ts = nowIso();
+  const payload = JSON.stringify({ via });
+  const stmt = db.prepare(
+    "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'read', ?, ?)",
+  );
+  const insertMany = db.transaction((rows: ReadonlyArray<string>) => {
+    for (const id of rows) stmt.run(id, ts, payload);
+  });
+  insertMany(ids);
 }
 
 /** Promote draft → active. Returns null on unknown id or non-draft status. */
@@ -856,6 +889,7 @@ export function searchLore(
       row.score ?? undefined,
     ),
   );
+  recordRead(db, ids, "search");
   return annotatePossibleConflicts(summaries);
 }
 
