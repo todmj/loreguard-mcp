@@ -3,9 +3,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { audit } from "../core/audit.js";
+import { findActiveAbsence, recordAbsence } from "../core/absence.js";
 import {
   findPossibleDuplicates,
   getLore,
+  reportConflict,
+  ReportConflictError,
   searchLore,
   suggestLore,
 } from "../core/lore.js";
@@ -15,6 +18,11 @@ import {
   shouldGateRestrictedGet,
   stripPossibleConflicts,
 } from "./redact.js";
+import {
+  auditMessageForTooLong,
+  checkLength,
+  LENGTH_CAPS,
+} from "./validation.js";
 
 /**
  * R1 — MCP server. Stdio transport only (no network listener). Three
@@ -160,11 +168,36 @@ export async function runMcpServer(): Promise<void> {
         // possibleConflicts is a CLI-only heuristic for human triage —
         // see stripPossibleConflicts for the rationale.
         const mcpHits = stripPossibleConflicts(hits);
+        // Verified-absence: when there are no hits AND the agent
+        // explicitly searched (not a blank "list recent" call), surface
+        // any active marker so the next agent knows "we checked, known
+        // gap" rather than re-discovering the same nothing. Absent the
+        // query we have nothing to match a marker against.
+        let absenceMarker: ReturnType<typeof findActiveAbsence> = null;
+        if (mcpHits.length === 0 && args.query) {
+          absenceMarker = findActiveAbsence(db, {
+            query: args.query,
+            repo: args.repo,
+          });
+        }
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ results: mcpHits }, null, 2),
+              text: JSON.stringify(
+                absenceMarker
+                  ? {
+                      results: mcpHits,
+                      absence_marker: {
+                        reason: absenceMarker.reason,
+                        recordedAt: absenceMarker.recordedAt,
+                        expiresAt: absenceMarker.expiresAt,
+                      },
+                    }
+                  : { results: mcpHits },
+                null,
+                2,
+              ),
             },
           ],
         };
@@ -271,13 +304,24 @@ export async function runMcpServer(): Promise<void> {
         "discovered. NOT for transient debug notes or task-specific " +
         "context — that belongs in the chat, not the long-term memory.",
       inputSchema: {
-        title: z.string().min(1).max(200).describe("Short title — what is the rule / fact?"),
+        // Length caps live in the handler, not the schema. zod's max-cap
+        // path produced "body is undefined" upstream when an over-cap
+        // summary failed parsing — the cause was masked and agents
+        // dropped the suggestion. The handler now returns a structured
+        // `{error: "summary_too_long", suggested_cut, ...}` the agent
+        // can correct against. The description still names the cap so
+        // well-behaved agents respect it upfront.
+        title: z
+          .string()
+          .min(1)
+          .describe(
+            `Short title — what is the rule / fact? Hard cap ${LENGTH_CAPS.title} chars.`,
+          ),
         summary: z
           .string()
           .min(1)
-          .max(800)
           .describe(
-            "One-paragraph summary (≤ 800 chars). This is what most search " +
+            `One-paragraph summary (≤ ${LENGTH_CAPS.summary} chars). This is what most search ` +
               "results show — should stand alone without the body; assume " +
               "readers won't drill in. Aim for the *why* and the *what*, " +
               "not just the *what*; a longer cap exists so search hits can " +
@@ -337,6 +381,36 @@ export async function runMcpServer(): Promise<void> {
         confidence: args.confidence,
         team: args.team,
       };
+      // Length guards — check title first, then summary. Return the
+      // structured error to the agent (NOT isError: true — the response
+      // is well-formed, the agent just has to retry with shorter input)
+      // and log the cap breach to the audit log with a greppable shape.
+      const titleErr = checkLength("title", args.title);
+      if (titleErr) {
+        audit({
+          tool: "suggest_lore",
+          request: sanitised,
+          error: auditMessageForTooLong(titleErr),
+        });
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(titleErr, null, 2) },
+          ],
+        };
+      }
+      const summaryErr = checkLength("summary", args.summary);
+      if (summaryErr) {
+        audit({
+          tool: "suggest_lore",
+          request: sanitised,
+          error: auditMessageForTooLong(summaryErr),
+        });
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(summaryErr, null, 2) },
+          ],
+        };
+      }
       try {
         const lore = suggestLore(db, {
           title: args.title,
@@ -414,6 +488,309 @@ export async function runMcpServer(): Promise<void> {
       }
     },
   );
+
+  // ---- report_conflict -------------------------------------------------
+  server.registerTool(
+    "report_conflict",
+    {
+      title: "Report a conflict against a canonical lore record",
+      description:
+        "Use when you've found code (or another authoritative source) " +
+        "that contradicts an existing ACTIVE lore record. Creates a DRAFT " +
+        "counter-record linked back to the original via `conflictsWith` — " +
+        "it lands in `loreguard review` for the human to triage. The " +
+        "original record is NEVER mutated; the link is one-way. Resolution " +
+        "is the reviewer's call (approve the counter-claim → use " +
+        "`loreguard supersede` or `loreguard update` to fix the original; " +
+        "reject → the original stands).\n\n" +
+        "Distinct from the runtime `possibleConflicts` heuristic on search " +
+        "results — that's shared-scope overlap detection. This is explicit, " +
+        "persisted, agent-flagged disagreement.",
+      inputSchema: {
+        existingId: z
+          .string()
+          .min(1)
+          .describe(
+            "The 8-char id of the existing ACTIVE record being challenged. " +
+              "Get this from a prior `search_lore` or `get_lore` call.",
+          ),
+        observation: z
+          .string()
+          .min(1)
+          .max(800)
+          .describe(
+            "What did you observe that contradicts the existing record? " +
+              "Stand-alone explanation — the reviewer reads this without " +
+              "additional context. ≤ 800 chars (mirrors suggest_lore.summary).",
+          ),
+        source: z
+          .string()
+          .url()
+          .optional()
+          .describe(
+            "URL pointing at the contradicting evidence (commit, PR, " +
+              "code permalink). Counter-claims with a source are higher-trust.",
+          ),
+        repos: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Repos this counter-claim is scoped to. Inherits from the " +
+              "challenged record if omitted (handled by the reviewer).",
+          ),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Extra tags. 'conflict-report' is always added automatically.",
+          ),
+      },
+    },
+    async (args) => {
+      // Audit shape mirrors suggest_lore: never record the observation
+      // body, just its length, so the audit log can be grepped for
+      // "agent X repeatedly challenges record Y" without leaking content.
+      const sanitised: Record<string, unknown> = {
+        existingId: args.existingId,
+        observationChars: args.observation.length,
+        source: args.source,
+        repos: args.repos,
+        tags: args.tags,
+      };
+      try {
+        // Restricted records are NEVER challengeable via MCP — the
+        // core reportConflict refuses them regardless of the env
+        // gate. We pre-check here purely to (a) emit a cleaner
+        // `blocked: "restricted"` audit row and (b) give the agent a
+        // useful hint instead of the generic catch-block message.
+        // No env check: even with LOREGUARD_ALLOW_RESTRICTED_MCP=1
+        // the core would still throw. Telling the agent to set the
+        // env var would be a lie.
+        const existing = getLore(db, args.existingId);
+        if (existing && existing.restricted) {
+          audit({
+            tool: "report_conflict",
+            request: sanitised,
+            blocked: "restricted",
+          });
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    error: "restricted",
+                    hint:
+                      "Restricted records cannot be challenged via MCP. " +
+                      "If you believe one needs revising, surface the concern " +
+                      "to the human and let them use the CLI (`loreguard show <id>` " +
+                      "then `loreguard update` / `loreguard supersede`).",
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        const draft = reportConflict(db, {
+          existingId: args.existingId,
+          observation: args.observation,
+          source: args.source,
+          repos: args.repos,
+          tags: args.tags,
+        });
+        audit({
+          tool: "report_conflict",
+          request: sanitised,
+          resultCount: 1,
+          resultIds: [draft.id],
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  id: draft.id,
+                  status: draft.status,
+                  conflictsWith: draft.conflictsWith ?? [],
+                  message:
+                    "Counter-draft created. A human will review with `loreguard review` and " +
+                    "either approve / reject / edit / supersede the original.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        const reason =
+          err instanceof ReportConflictError ? err.reason : "internal_error";
+        const msg = err instanceof Error ? err.message : String(err);
+        audit({
+          tool: "report_conflict",
+          request: sanitised,
+          error: `${reason}: ${msg}`,
+        });
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `report_conflict failed (${reason}): ${msg}`,
+            },
+          ],
+        };
+      }
+    },
+  );
+
+  // ---- record_absence -------------------------------------------------
+  server.registerTool(
+    "record_absence",
+    {
+      title: "Record a verified-absence marker (no lore on this topic)",
+      description:
+        "Use when you've searched for a topic, found nothing, AND you've " +
+        "confirmed the gap is real and durable (not just a phrasing miss). " +
+        "Creates a self-expiring marker that future search_lore calls " +
+        "on the same normalised query will surface as 'reason: ...' " +
+        "alongside an empty results array — so the next agent knows " +
+        "it's an acknowledged gap rather than re-discovering nothing.\n\n" +
+        "Don't use this on every zero-hit search — that would pollute " +
+        "the marker pool. Use it when the absence is itself a finding.",
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe(
+            "The query you ran that returned zero hits. Normalised at " +
+              "write time (lowercase, sorted tokens) so re-phrasings match.",
+          ),
+        reason: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe(
+            "One-sentence explanation of WHY this is a known gap " +
+              "(e.g. 'team has no policy yet; decided ad hoc per incident').",
+          ),
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            "Optional repo scope. Repo-scoped markers shadow global ones " +
+              "when search_lore is called with the same repo.",
+          ),
+        expiresInDays: z
+          .number()
+          .int()
+          .min(1)
+          .max(365)
+          .optional()
+          .describe(
+            "Days until the marker auto-expires. Default 14. Stale 'we " +
+              "checked' claims age out fast so they don't become permanent " +
+              "and a bad call from one agent can't poison retrieval for a " +
+              "whole month.",
+          ),
+      },
+    },
+    async (args) => {
+      const sanitised: Record<string, unknown> = {
+        queryChars: args.query.length,
+        reasonChars: args.reason.length,
+        repo: args.repo,
+        expiresInDays: args.expiresInDays,
+      };
+      // R5 — opt-in env gate. `record_absence` is the one MCP write
+      // that bypasses the human review queue (markers are low-stakes,
+      // self-expiring, and never appear as canonical lore). Even so,
+      // agents writing persistent retrieval-affecting state without
+      // approval is a trust-model exception, so v0.1 ships with it
+      // gated off by default. Users opt in deliberately by setting
+      // LOREGUARD_ALLOW_MCP_ABSENCE=1 (the CLI `loreguard absent
+      // record` works unconditionally; humans don't need the gate).
+      if (process.env["LOREGUARD_ALLOW_MCP_ABSENCE"] !== "1") {
+        audit({
+          tool: "record_absence",
+          request: sanitised,
+          blocked: "mcp_disabled",
+        });
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  error: "mcp_record_absence_disabled",
+                  hint:
+                    "MCP-side absence-marker writes are off by default in v0.1. " +
+                    "Surface the finding to the human and let them record the " +
+                    "marker with `loreguard absent record \"<query>\" --reason \"...\"`. " +
+                    "To enable agent writes, the operator can set " +
+                    "LOREGUARD_ALLOW_MCP_ABSENCE=1 in the MCP server's environment.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+      try {
+        const result = recordAbsence(db, {
+          query: args.query,
+          reason: args.reason,
+          repo: args.repo,
+          expiresInDays: args.expiresInDays,
+          recordedBy: "agent",
+        });
+        audit({
+          tool: "record_absence",
+          request: sanitised,
+          resultCount: 1,
+          resultIds: [result.id],
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  id: result.id,
+                  expiresAt: result.expiresAt,
+                  message:
+                    "Absence marker recorded. Future search_lore calls " +
+                    "matching this normalised query will surface this marker " +
+                    `until ${result.expiresAt}.`,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        audit({
+          tool: "record_absence",
+          request: sanitised,
+          error: msg,
+        });
+        return {
+          isError: true,
+          content: [{ type: "text", text: `record_absence failed: ${msg}` }],
+        };
+      }
+    },
+  );
+
 
   // Connect on stdio. The MCP client (Claude Code, Cursor, etc.) is the
   // parent process; we read JSON-RPC framed messages on stdin, reply on

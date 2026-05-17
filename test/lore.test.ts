@@ -9,6 +9,7 @@ import {
   exportLore,
   findPossibleDuplicates,
   getLore,
+  getRejectionReason,
   listDrafts,
   listRecent,
   listRepos,
@@ -20,6 +21,7 @@ import {
   updateLore,
   verifyLore,
 } from "../src/core/lore.js";
+import { getString, parseArgs } from "../src/cli/args.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
 
@@ -199,6 +201,146 @@ describe("core/lore", () => {
     });
   });
 
+  describe("rejectLore reason capture", () => {
+    function lastRejectPayload(db: Database, id: string): string | null {
+      const row = db
+        .prepare(
+          "SELECT payload FROM events WHERE lore_id = ? AND kind = 'rejected' ORDER BY rowid DESC LIMIT 1",
+        )
+        .get(id) as { payload: string | null } | undefined;
+      return row?.payload ?? null;
+    }
+    function newDraft(): string {
+      return suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+    }
+
+    it("rejectLore stores reason in event payload as JSON envelope", () => {
+      const id = newDraft();
+      expect(rejectLore(db, id, "because foo")).toBe(true);
+      expect(lastRejectPayload(db, id)).toBe(
+        JSON.stringify({ reason: "because foo" }),
+      );
+    });
+
+    it("rejectLore without reason leaves payload null", () => {
+      const id = newDraft();
+      expect(rejectLore(db, id)).toBe(true);
+      expect(lastRejectPayload(db, id)).toBeNull();
+    });
+
+    it("rejectLore with empty reason writes null payload", () => {
+      const id = newDraft();
+      expect(rejectLore(db, id, "")).toBe(true);
+      expect(lastRejectPayload(db, id)).toBeNull();
+    });
+
+    it("rejectLore with whitespace-only reason writes null payload", () => {
+      const id = newDraft();
+      expect(rejectLore(db, id, "   \t  \n  ")).toBe(true);
+      expect(lastRejectPayload(db, id)).toBeNull();
+    });
+
+    it("rejectLore trims surrounding whitespace in reason", () => {
+      const id = newDraft();
+      expect(rejectLore(db, id, "  hi  ")).toBe(true);
+      expect(lastRejectPayload(db, id)).toBe(
+        JSON.stringify({ reason: "hi" }),
+      );
+    });
+
+    it("rejectLore json-escapes special characters in reason", () => {
+      const id = newDraft();
+      const tricky = `she said "no"\nand: \\path`;
+      expect(rejectLore(db, id, tricky)).toBe(true);
+      const payload = lastRejectPayload(db, id)!;
+      // Round-trips cleanly via JSON.parse — no manual quote handling.
+      expect(JSON.parse(payload)).toEqual({ reason: tricky });
+    });
+  });
+
+  describe("getRejectionReason", () => {
+    it("returns captured reason", () => {
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      rejectLore(db, id, "wrong scope");
+      expect(getRejectionReason(db, id)).toBe("wrong scope");
+    });
+
+    it("returns undefined when no reason captured", () => {
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      rejectLore(db, id);
+      expect(getRejectionReason(db, id)).toBeUndefined();
+    });
+
+    it("returns undefined for never-rejected id", () => {
+      expect(getRejectionReason(db, "ghost123")).toBeUndefined();
+    });
+
+    it("returns undefined on malformed payload json", () => {
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      rejectLore(db, id);
+      // Simulate a corrupt write — replace payload with non-JSON garbage.
+      db.prepare(
+        "UPDATE events SET payload = '<not json>' WHERE lore_id = ? AND kind = 'rejected'",
+      ).run(id);
+      expect(getRejectionReason(db, id)).toBeUndefined();
+    });
+
+    it("returns undefined when payload is valid JSON but lacks a string reason", () => {
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      rejectLore(db, id);
+      db.prepare(
+        "UPDATE events SET payload = '{\"otherKey\":42}' WHERE lore_id = ? AND kind = 'rejected'",
+      ).run(id);
+      expect(getRejectionReason(db, id)).toBeUndefined();
+    });
+  });
+
+  /**
+   * cmdReject is private to src/cli/index.ts; rather than spawn the
+   * built binary (which would force a build per test run) we exercise
+   * the same args→getString→rejectLore composition the CLI uses. AC-14
+   * (bare `--reason` flag) is a contract about that composition, not
+   * the rejectLore core function, so it lives here.
+   */
+  describe("cmdReject plumbing (parseArgs + getString + rejectLore)", () => {
+    function rejectViaCliArgs(id: string, argv: string[]): boolean {
+      const parsed = parseArgs(argv);
+      const reason = getString(parsed.flags, "reason");
+      return rejectLore(db, id, reason);
+    }
+    function lastRejectPayload(id: string): string | null {
+      const row = db
+        .prepare(
+          "SELECT payload FROM events WHERE lore_id = ? AND kind = 'rejected' ORDER BY rowid DESC LIMIT 1",
+        )
+        .get(id) as { payload: string | null } | undefined;
+      return row?.payload ?? null;
+    }
+
+    it("cmdReject plumbs --reason flag through to rejectLore", () => {
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      expect(rejectViaCliArgs(id, ["--reason", "because X"])).toBe(true);
+      expect(lastRejectPayload(id)).toBe(
+        JSON.stringify({ reason: "because X" }),
+      );
+    });
+
+    it("cmdReject without --reason preserves null payload", () => {
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      expect(rejectViaCliArgs(id, [])).toBe(true);
+      expect(lastRejectPayload(id)).toBeNull();
+    });
+
+    it("cmdReject treats bare --reason flag as no reason", () => {
+      // `--reason` with no following value (or followed by another flag)
+      // becomes flags.reason = true; getString collapses that to undefined
+      // so the user gets "no reason" rather than the literal string "true".
+      const id = suggestLore(db, { title: "t", summary: "s", body: "b" }).id;
+      expect(rejectViaCliArgs(id, ["--reason"])).toBe(true);
+      expect(lastRejectPayload(id)).toBeNull();
+    });
+  });
+
   describe("approveLore", () => {
     it("returns null on unknown id", () => {
       expect(approveLore(db, "ghost")).toBeNull();
@@ -206,6 +348,40 @@ describe("core/lore", () => {
     it("returns null when target isn't a draft (already active)", () => {
       const lore = addLore(db, { title: "t", summary: "s", body: "b" });
       expect(approveLore(db, lore.id)).toBeNull();
+    });
+  });
+
+  describe("searchLore — public-API input validation", () => {
+    it("default limit is 10 when omitted", () => {
+      for (let i = 0; i < 15; i++) {
+        addLore(db, { title: `record ${i}`, summary: "s", body: "b" });
+      }
+      const hits = searchLore(db, {});
+      expect(hits.length).toBeLessThanOrEqual(10);
+    });
+
+    it("accepts integer limit in [1, 50]", () => {
+      addLore(db, { title: "one", summary: "s", body: "b" });
+      expect(searchLore(db, { limit: 1 })).toHaveLength(1);
+      expect(searchLore(db, { limit: 50 })).toHaveLength(1);
+    });
+
+    it("rejects non-integer / out-of-range / NaN limit with a typed error", () => {
+      const bad = [0, -1, 1.5, 51, 100, Number.NaN, Infinity, -Infinity];
+      for (const v of bad) {
+        expect(() => searchLore(db, { limit: v })).toThrow(/limit must be/);
+      }
+    });
+
+    it("rejects invalid updatedAfter (catches embedder errors at the boundary)", () => {
+      expect(() => searchLore(db, { updatedAfter: "yesterday" })).toThrow(
+        /updatedAfter.*not a valid ISO/,
+      );
+      // Valid ISO shapes still pass.
+      expect(() =>
+        searchLore(db, { updatedAfter: "2026-01-01T00:00:00.000Z" }),
+      ).not.toThrow();
+      expect(() => searchLore(db, { updatedAfter: "2026-01-01" })).not.toThrow();
     });
   });
 
@@ -315,12 +491,11 @@ describe("core/lore", () => {
       expect(billing[0]!.repos).toContain("billing-svc");
     });
 
-    it("limit clamps at 50", () => {
+    it("limit > 50 throws (was: silent clamp; reviewer asked for fail-fast on the public API)", () => {
       for (let i = 0; i < 60; i++) {
         addLore(db, { title: `entry-${i}`, summary: "s", body: "b" });
       }
-      const hits = searchLore(db, { limit: 100 });
-      expect(hits.length).toBeLessThanOrEqual(50);
+      expect(() => searchLore(db, { limit: 100 })).toThrow(/limit must be/);
     });
   });
 

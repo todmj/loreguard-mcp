@@ -3,6 +3,11 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { execSync } from "node:child_process";
 
+import {
+  findActiveAbsence,
+  listAbsences,
+  recordAbsence,
+} from "../core/absence.js";
 import { defaultDbPath, openDb } from "../db/index.js";
 import type { LoreConfidence } from "../db/types.js";
 import {
@@ -72,9 +77,13 @@ COMMANDS
                             [s]kip / [q]uit. Use --list (or pipe to stdout)
                             for the non-interactive list view.
   approve <id>              Promote draft → active.
-  reject <id>               Drop a draft. Refuses non-drafts (use
+  reject <id> [--reason "..."]
+                            Drop a draft. Refuses non-drafts (use
                             deprecate instead). Emits a 'rejected' event
                             so the audit chain shows the triage decision.
+                            --reason is optional but recommended — gives
+                            the agent (or future-you) a record of WHY
+                            the draft was dropped.
   deprecate <id>            Mark deprecated.
   supersede <old-id> --with <new-id>
                             Mark <old-id> as superseded by <new-id>.
@@ -138,6 +147,41 @@ COMMANDS
                             review window). Drafts only — promote via
                             \`loreguard review\`. Use --repo to override the
                             auto-detected name (repeatable).
+  absent record "<query>" --reason "..." [--repo X] [--expires-days 30]
+                            Record a verified-absence marker: "we
+                            checked, the team has no policy on this".
+                            When future search_lore returns zero hits
+                            on the same normalised query, the response
+                            includes this marker so the agent knows
+                            it's an acknowledged gap. Self-expires
+                            (default 30 days).
+  absent list [--include-expired]
+                            List active absence markers (or all of
+                            them with --include-expired).
+  stats [--top N] [--retire] [--since-days N] [--quiet-for-days N] [--json]
+                            Local read-tracking view: top-cited
+                            records, retirement candidates (active +
+                            zero reads in N days), recent activity.
+                            Opt out of read tracking via
+                            LOREGUARD_NO_TELEMETRY=1.
+  ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run]
+                            Bulk-import drafts from Markdown files.
+                            Splits on H3 subsections or top-level
+                            bullets. Each candidate becomes a DRAFT
+                            tagged 'imported' — review with
+                            \`loreguard review\`.
+  hooks install [--project] [--dry-run]
+                            Wire the Claude Code Stop-hook for
+                            session-end review nudges. Writes
+                            .claude/settings.json so when Claude is
+                            about to stop, the hook checks for pending
+                            drafts and (once per session) asks the
+                            user whether to triage them. Opt-in.
+  hooks review-nudge        Internal — invoked by the Stop hook.
+                            Reads Claude hook JSON on stdin; emits
+                            block-JSON to stdout when drafts are
+                            pending and this session hasn't been
+                            nudged yet.
   print-claude-instructions
                             Print the retrieval rule to paste into
                             your CLAUDE.md / agent instructions so the
@@ -387,7 +431,13 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
         continue;
       }
       if (answer === "r" || answer === "reject" || answer === "n") {
-        const ok = rejectLore(db, d.id);
+        // Capture an optional reason so the agent (or future-me) can see
+        // *why* a draft was dropped — keeps the feedback loop closed.
+        // Blank/whitespace is normalised to "no reason" inside rejectLore.
+        const reasonInput = (
+          await prompt("  reason (optional, blank to skip): ")
+        ).trim();
+        const ok = rejectLore(db, d.id, reasonInput || undefined);
         process.stdout.write(
           ok ? `✗ rejected ${d.id}\n\n` : `! could not reject ${d.id}\n\n`,
         );
@@ -426,9 +476,12 @@ async function cmdReject(args: ReturnType<typeof parseArgs>): Promise<number> {
     process.stderr.write("loreguard: reject <id> requires an id\n");
     return 2;
   }
+  // getString returns undefined for a bare `--reason` (no value) too,
+  // so a missing value can't be silently coerced to the literal "true".
+  const reason = getString(args.flags, "reason");
   const db = openDb();
   try {
-    const ok = rejectLore(db, id);
+    const ok = rejectLore(db, id, reason);
     if (!ok) {
       process.stderr.write(
         `loreguard: cannot reject ${id} (unknown id or not a draft; use \`loreguard deprecate\` for active records)\n`,
@@ -739,6 +792,16 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
       process.stdout.write(
         `  ${r.skippedNewer} record(s) skipped — local copy is newer (pass --force to overwrite)\n`,
       );
+    }
+    if (r.danglingSupersededBy.length > 0) {
+      process.stderr.write(
+        `  WARNING — ${r.danglingSupersededBy.length} record(s) reference a supersededBy id that doesn't exist locally:\n`,
+      );
+      for (const d of r.danglingSupersededBy) {
+        process.stderr.write(
+          `    ${d.file}: ${d.id} → ${d.supersededBy} (dead reference until the target lands)\n`,
+        );
+      }
     }
     if (r.skipped.length > 0) {
       process.stdout.write(`  rejected ${r.skipped.length} file(s):\n`);
@@ -1077,7 +1140,7 @@ async function cmdSetup(args: ReturnType<typeof parseArgs>): Promise<number> {
 }
 
 async function cmdDoctor(): Promise<number> {
-  const { exitCode, checks } = runDoctor();
+  const { exitCode, checks } = await runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
   return exitCode;
 }
@@ -1181,6 +1244,341 @@ function redactTitle(t: string): string {
   return t.slice(0, 47) + "…";
 }
 
+async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  if (sub !== "record" && sub !== "list") {
+    process.stderr.write(
+      "loreguard: absent requires a subcommand — `loreguard absent record \"<query>\" --reason \"...\"` or `loreguard absent list`\n",
+    );
+    return 2;
+  }
+  const db = openDb();
+  try {
+    if (sub === "record") {
+      const query = args.positionals[1];
+      if (!query) {
+        process.stderr.write(
+          "loreguard: absent record requires a query (in quotes)\n",
+        );
+        return 2;
+      }
+      const reason = getString(args.flags, "reason");
+      if (!reason) {
+        process.stderr.write(
+          "loreguard: absent record requires --reason \"...\" explaining the gap\n",
+        );
+        return 2;
+      }
+      const repo = getString(args.flags, "repo");
+      const expiresInDaysRaw = getString(args.flags, "expires-days");
+      let expiresInDays: number | undefined;
+      if (expiresInDaysRaw !== undefined) {
+        const n = Number(expiresInDaysRaw);
+        if (!Number.isFinite(n) || !Number.isInteger(n)) {
+          process.stderr.write(
+            `loreguard: --expires-days must be an integer (got ${JSON.stringify(expiresInDaysRaw)})\n`,
+          );
+          return 2;
+        }
+        expiresInDays = Math.max(1, Math.min(365, n));
+      }
+      const result = recordAbsence(db, {
+        query,
+        reason,
+        repo,
+        expiresInDays,
+        recordedBy: "human",
+      });
+      process.stdout.write(
+        `loreguard: recorded absence marker ${result.id} (expires ${result.expiresAt})\n`,
+      );
+      // Echo what an active search would surface — useful sanity check.
+      const found = findActiveAbsence(db, { query, repo });
+      if (found) {
+        process.stdout.write(
+          `  query normalised to: "${found.query}"${found.repo ? ` (repo: ${found.repo})` : ""}\n`,
+        );
+      }
+      return 0;
+    }
+    const includeExpired = getBool(args.flags, "include-expired");
+    const markers = listAbsences(db, { includeExpired });
+    if (markers.length === 0) {
+      process.stdout.write(
+        includeExpired
+          ? "loreguard: no absence markers recorded\n"
+          : "loreguard: no active absence markers (pass --include-expired to see aged-out ones)\n",
+      );
+      return 0;
+    }
+    for (const m of markers) {
+      const scope = m.repo ? ` [${m.repo}]` : "";
+      const now = new Date().toISOString();
+      const expired = m.expiresAt <= now;
+      const flag = expired ? " (expired)" : "";
+      process.stdout.write(
+        `${m.id}${scope}  "${m.query}"${flag}\n  reason:  ${m.reason}\n  recorded: ${m.recordedAt} by ${m.recordedBy}\n  expires:  ${m.expiresAt}\n\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const { recentActivity, renderStatsReport, retireCandidates, topCitedRecords } =
+    await import("./stats.js");
+  // Numeric flags: refuse non-integer input early rather than passing
+  // NaN through to better-sqlite3 (which raises an unhelpful "datatype
+  // mismatch" deep in the call stack).
+  function parseInt1(flag: string, fallback: number): number | null {
+    const raw = getString(args.flags, flag);
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+      process.stderr.write(
+        `loreguard stats: --${flag} must be a positive integer (got ${JSON.stringify(raw)})\n`,
+      );
+      return null;
+    }
+    return n;
+  }
+  const top = parseInt1("top", 10);
+  if (top === null) return 2;
+  const sinceDays = parseInt1("since-days", 90);
+  if (sinceDays === null) return 2;
+  const quietForDays = parseInt1("quiet-for-days", 180);
+  if (quietForDays === null) return 2;
+  const wantsJson = getBool(args.flags, "json");
+  const retireOnly = getBool(args.flags, "retire");
+  const db = openDb();
+  try {
+    const retire = retireCandidates(db, { quietForDays });
+    if (retireOnly) {
+      if (wantsJson) {
+        process.stdout.write(JSON.stringify(retire, null, 2) + "\n");
+      } else if (retire.length === 0) {
+        process.stdout.write("loreguard: no retirement candidates\n");
+      } else {
+        for (const r of retire) {
+          const lastSeen = r.lastReadAt
+            ? `last read ${r.lastReadAt.slice(0, 10)}`
+            : "never read";
+          const src = r.hasSource ? "sourced" : "no source";
+          process.stdout.write(
+            `${r.id}  ${r.title}  [${r.confidence}, ${src}, ${lastSeen}]\n`,
+          );
+        }
+      }
+      return 0;
+    }
+    const cited = topCitedRecords(db, { sinceDays, limit: top });
+    const activity = recentActivity(db, { days: sinceDays });
+    if (wantsJson) {
+      process.stdout.write(
+        JSON.stringify(
+          { topCited: cited, retireCandidates: retire, recentActivity: activity },
+          null,
+          2,
+        ) + "\n",
+      );
+    } else {
+      process.stdout.write(renderStatsReport(cited, retire, activity) + "\n");
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdHooks(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  if (sub !== "install" && sub !== "review-nudge") {
+    process.stderr.write(
+      "loreguard: hooks requires a subcommand — `loreguard hooks install [--project]` or `loreguard hooks review-nudge`\n",
+    );
+    return 2;
+  }
+  const {
+    decideNudge,
+    markSessionNudged,
+    mergeHookSettings,
+    parseHookInput,
+    projectHookSettingsPath,
+    readSettingsFile,
+    sessionAlreadyNudged,
+  } = await import("./hooks.js");
+  if (sub === "install") {
+    const dryRun = getBool(args.flags, "dry-run");
+    const path = projectHookSettingsPath();
+    const existing = readSettingsFile(path);
+    const next = mergeHookSettings(existing);
+    if (existing === next) {
+      process.stdout.write(
+        `loreguard hooks install: ${path} already contains the loreguard Stop hook (no changes)\n`,
+      );
+      return 0;
+    }
+    if (dryRun) {
+      process.stdout.write(`--- would write ${path} ---\n`);
+      process.stdout.write(next);
+      process.stdout.write("--- (dry-run — nothing written) ---\n");
+      return 0;
+    }
+    const { dirname } = await import("node:path");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, next);
+    process.stdout.write(
+      `loreguard hooks install: wired Stop hook into ${path}\n`,
+    );
+    return 0;
+  }
+  // review-nudge: invoked by the Stop hook. Read stdin, check drafts,
+  // emit JSON. Never throw — Claude will surface our exit code as a
+  // hook failure to the user, which is louder than the bug warrants.
+  try {
+    const stdin = await readAllStdin();
+    const { sessionId } = parseHookInput(stdin);
+    const db = openDb();
+    try {
+      const pending = (
+        db.prepare(
+          "SELECT COUNT(*) AS n FROM lore WHERE status = 'draft'",
+        ).get() as { n: number }
+      ).n;
+      const nudgeEveryTime =
+        process.env["LOREGUARD_REVIEW_NUDGE_EVERY_TIME"] === "1";
+      const out = decideNudge({
+        pendingDraftCount: pending,
+        sessionAlreadyNudged: sessionAlreadyNudged(sessionId),
+        nudgeEveryTime,
+      });
+      if (out.decision === "block") {
+        markSessionNudged(sessionId);
+        process.stdout.write(JSON.stringify(out));
+      }
+      // else: silent pass — Claude stops normally.
+      return 0;
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    // Don't surface — the hook failing should NOT block Claude
+    // stopping or break the user's workflow. Log to stderr (Claude
+    // shows hook stderr but doesn't interpret it as a block).
+    process.stderr.write(
+      `loreguard hooks review-nudge: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 0;
+  }
+}
+
+async function readAllStdin(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  let buf = "";
+  for await (const chunk of process.stdin) buf += chunk;
+  return buf;
+}
+
+async function cmdIngestMd(
+  args: ReturnType<typeof parseArgs>,
+): Promise<number> {
+  const { globSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+  const { deriveItemSource, parseMarkdownItems } = await import("./ingest.js");
+  if (args.positionals.length === 0) {
+    process.stderr.write(
+      "loreguard: ingest-md requires at least one file/glob argument\n",
+    );
+    return 2;
+  }
+  const section = getString(args.flags, "section");
+  const extraTags = getStringArray(args.flags, "tag");
+  const repoFlags = getStringArray(args.flags, "repo");
+  const baseSource = getString(args.flags, "source");
+  const dryRun = getBool(args.flags, "dry-run");
+  // Auto-detect repo if user didn't supply one, matching the induct
+  // ladder so a bare `loreguard ingest-md ./CLAUDE.md` Just Works.
+  const repos =
+    repoFlags.length > 0
+      ? repoFlags
+      : (() => {
+          const det = detectRepoName();
+          return det ? [det.name] : [];
+        })();
+  // Expand the globs.
+  const files = new Set<string>();
+  for (const pattern of args.positionals) {
+    try {
+      for (const f of globSync(pattern)) {
+        if (typeof f === "string" && f.endsWith(".md")) files.add(f);
+      }
+    } catch {
+      // Treat the literal as a file path if globSync rejects it.
+      if (pattern.endsWith(".md") && existsSync(pattern)) files.add(pattern);
+    }
+  }
+  if (files.size === 0) {
+    process.stderr.write(
+      `loreguard: ingest-md matched 0 markdown files for ${args.positionals.join(" ")}\n`,
+    );
+    return 1;
+  }
+
+  const db = openDb();
+  let drafted = 0;
+  let scannedFiles = 0;
+  try {
+    for (const file of files) {
+      scannedFiles++;
+      const text = readFileSync(file, "utf8");
+      const items = parseMarkdownItems(text, { section });
+      const fileBase = basename(file).replace(/\.md$/, "");
+      const baseTags = [
+        "imported",
+        `imported-from:${fileBase}`,
+        ...extraTags,
+      ];
+      for (const item of items) {
+        const source = deriveItemSource(baseSource, item.sourceLine);
+        if (dryRun) {
+          process.stdout.write(
+            `  [dry-run] ${file}:L${item.sourceLine}  ${item.title}\n`,
+          );
+        } else {
+          suggestLore(db, {
+            title: item.title,
+            summary: item.summary,
+            body: item.body,
+            tags: baseTags,
+            repos: repos.length > 0 ? repos : undefined,
+            source,
+            // Confidence is clamped to medium on drafts regardless,
+            // but pass low when no source so the surface signals it.
+            confidence: source ? "medium" : "low",
+            author: "ingest-md",
+          });
+        }
+        drafted++;
+      }
+    }
+    if (dryRun) {
+      process.stdout.write(
+        `loreguard: would draft ${drafted} record(s) from ${scannedFiles} file(s) (dry-run — nothing written)\n`,
+      );
+    } else {
+      process.stdout.write(
+        `loreguard: drafted ${drafted} record(s) from ${scannedFiles} file(s). Review with \`loreguard review\`.\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 export async function main(argv: ReadonlyArray<string>): Promise<number> {
   const [, , ...rest] = argv;
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
@@ -1241,6 +1639,14 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdDemo(parsed);
       case "induct":
         return await cmdInduct(parsed);
+      case "absent":
+        return await cmdAbsent(parsed);
+      case "stats":
+        return await cmdStats(parsed);
+      case "ingest-md":
+        return await cmdIngestMd(parsed);
+      case "hooks":
+        return await cmdHooks(parsed);
       case "doctor":
         return await cmdDoctor();
       case "print-claude-instructions":
