@@ -37,7 +37,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "skills"
   ],
   "engines": {
     "node": ">=20"

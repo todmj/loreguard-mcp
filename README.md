@@ -157,6 +157,37 @@ human-driven cold-start. Aim answers at non-obvious, high-consequence
 knowledge (see [What deserves lore?](#what-deserves-lore) below);
 "we use TypeScript" goes in `CLAUDE.md`, not here.
 
+#### Agent-driven alternative — `/loreguard-onboard` skill
+
+`loreguard induct` works without an agent in the loop — it asks the
+same 10 generic questions every time. When you *do* have an agent
+available, the bundled **`/loreguard-onboard` Claude skill** does
+something better: it reads the repo first (README, ADRs, recent
+commits, deprecation markers, in-flight migrations) and surfaces
+*repo-specific* candidate drafts grounded in real source citations,
+then asks targeted follow-ups instead of the generic 10.
+
+Same trust model — every record still lands as a draft and goes
+through `loreguard review`. Install:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -r skills/loreguard-onboard ~/.claude/skills/
+```
+
+Then in Claude Code:
+
+```text
+/loreguard-onboard
+```
+
+The skill needs the `loreguard-mcp` server already configured (so
+`search_lore` / `get_lore` / `suggest_lore` are callable). See
+`skills/loreguard-onboard/SKILL.md` for the full procedure.
+
+Use the CLI for offline / scripted cold-starts; use the skill when you
+want the agent to do the repo-reading work for you.
+
 ### Step 2 — `loreguard review` (triage drafts)
 
 Drafts are hidden from default search until a human promotes them.
