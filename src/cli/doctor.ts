@@ -33,7 +33,7 @@ function pkgVersion(): string {
   return "0.1.0";
 }
 
-export function runDoctor(): { exitCode: number; checks: Check[] } {
+export async function runDoctor(): Promise<{ exitCode: number; checks: Check[] }> {
   const dbPath = defaultDbPath();
   const dbDir = dirname(dbPath);
   const auditPathStr = auditPath();
@@ -172,7 +172,35 @@ export function runDoctor(): { exitCode: number; checks: Check[] } {
     });
   }
 
-  // 8. Version.
+  // 8. Read tracking (local, used by `loreguard stats`).
+  //    Disabled when either env opt-out is set; otherwise enabled.
+  try {
+    const db = openDb(dbPath);
+    try {
+      const loreCount = (
+        db.prepare("SELECT COUNT(*) AS n FROM lore").get() as { n: number }
+      ).n;
+      const { retireCandidates } = await import("./stats.js");
+      const retire = retireCandidates(db, {});
+      const trackingOff =
+        !!process.env["LOREGUARD_NO_TELEMETRY"] ||
+        !!process.env["LOREGUARD_AUDIT_OFF"];
+      checks.push({
+        label: `Stats: ${loreCount} record(s), ${retire.length} retirement candidate(s)`,
+        level: "ok",
+        detail: trackingOff
+          ? `Read tracking: disabled${process.env["LOREGUARD_NO_TELEMETRY"] ? " (LOREGUARD_NO_TELEMETRY)" : " (LOREGUARD_AUDIT_OFF)"}. Run \`loreguard stats --retire\` to review candidates.`
+          : "Read tracking: enabled. Run `loreguard stats --retire` to review candidates.",
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Best-effort — if openDb / stats fails the other checks will already
+    // have surfaced the real DB issue.
+  }
+
+  // 9. Version.
   checks.push({ label: `Version: ${pkgVersion()}`, level: "ok" });
 
   const hasFail = checks.some((c) => c.level === "fail");
