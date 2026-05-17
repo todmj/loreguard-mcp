@@ -15,15 +15,19 @@
    agent (one-way `conflictsWith` link; the reviewer resolves via the
    existing approve / supersede / reject lifecycle).
 
-   **`record_absence` is the one MCP write that bypasses the review
-   gate** — by design. Markers are low-stakes ("we checked, no policy
-   here yet") and self-expiring (default 14 days, max 365), so a bad
-   marker ages out automatically rather than persisting as canonical
-   knowledge. They never appear as search results — only as a
-   decoration on a zero-hit response — so they can't be confused for
-   authoritative records. If you want to disable that path entirely,
-   the agent simply has no way to write a marker without an active
-   MCP connection and the tool registered.
+   **`record_absence` is the one MCP tool that, when enabled, lets
+   agents bypass the review gate** — and v0.1 ships it **off by
+   default** because of that. The CLI `loreguard absent record`
+   works unconditionally (humans don't need a gate); MCP-side
+   `record_absence` requires `LOREGUARD_ALLOW_MCP_ABSENCE=1` in the
+   server's environment. Even when enabled the design is defensive:
+   markers are low-stakes ("we checked, no policy here yet"),
+   self-expiring (default 14 days, max 365) so a bad marker ages
+   out, never appear as search results (only as a decoration on a
+   zero-hit response) so they can't masquerade as canonical, and
+   the audit row records only `queryChars`/`reasonChars` — never
+   the text — so the audit log doesn't grow a parallel "what did
+   the agent know" surface.
 3. **Stale knowledge should not silently masquerade as authoritative.**
    Mitigation: records carry `reviewAfter`; search results carry
    `stale: true` when the date has passed; the CLI prints a warning.
@@ -57,7 +61,7 @@ What's NOT in scope:
 | Search excludes by default | `draft`, `deprecated`, `superseded`, `restricted` |
 | `includeRestricted` via MCP | Ignored unless `LOREGUARD_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
 | `get_lore` of a restricted id via MCP | Same gate as `includeRestricted`. With the gate off, `get_lore` returns a minimal refusal (`{ id, restricted: true, error: "restricted", hint: "..." }`) — no title, no summary, no body, no source — and audits the blocked attempt with `blocked: "restricted"`. With the gate on, returns the full record. CLI `loreguard show <id>` is unaffected. |
-| `report_conflict` against a restricted id via MCP | Same gate as `get_lore`. With the gate off, returns the same `{ error: "restricted", hint: ... }` refusal shape and audits `blocked: "restricted"` — never echoes the restricted record's title/summary/body. |
+| `report_conflict` against a restricted id via MCP | **Always refused, regardless of `LOREGUARD_ALLOW_RESTRICTED_MCP`.** Returns `{ error: "restricted", hint: "... use the CLI" }` and audits `blocked: "restricted"`. Restricted records can be revised, but only by a human via `loreguard update` / `loreguard supersede` — agents can read them (when the env gate is on) but cannot draft counter-records against them. |
 | Read tracking (`stats`) | Enabled by default — `searchLore` writes one `read` event per hit, `getLore` writes one per fetch. Both skip when `LOREGUARD_NO_TELEMETRY=1` or `LOREGUARD_AUDIT_OFF=1`. Events stay local in the SQLite `events` table; nothing crosses the network. |
 | Stop-hook review nudge | Opt-in via `loreguard hooks install`. When enabled, fires once per Claude session if pending drafts exist (marker file under `~/.loreguard/hooks/`). Hook code never throws — failures silently log to stderr so a hook bug never blocks Claude stopping. |
 
@@ -144,7 +148,8 @@ Query with `sqlite3 ~/.loreguard/lore.db 'SELECT * FROM events'`.
 |---|---|
 | `LOREGUARD_AUDIT_OFF=1` | Silence both the MCP audit log AND `read` event tracking. The test suite sets this. |
 | `LOREGUARD_NO_TELEMETRY=1` | Silence `read` event tracking only (audit log still records MCP tool calls). The "I just don't want stats counters" toggle. |
-| `LOREGUARD_ALLOW_RESTRICTED_MCP=1` | Let MCP `search_lore` / `get_lore` / `report_conflict` see restricted records. Off by default. |
+| `LOREGUARD_ALLOW_RESTRICTED_MCP=1` | Let MCP `search_lore` / `get_lore` see restricted records. Off by default. `report_conflict` is unconditionally blocked on restricted records regardless of this flag — agents can read but not challenge them. |
+| `LOREGUARD_ALLOW_MCP_ABSENCE=1` | Let MCP agents write absence markers via `record_absence`. Off by default — the v0.1 default is "agents surface the gap, humans record via CLI." |
 | `LOREGUARD_DB` | Override the SQLite path (default `~/.loreguard/lore.db`). |
 | `LOREGUARD_AUDIT_LOG` | Override the audit log path (default `~/.loreguard/audit.jsonl`). |
 | `LOREGUARD_REVIEW_NUDGE_EVERY_TIME=1` | (Stop-hook only) nudge every time instead of once per session. |
