@@ -706,7 +706,7 @@ nothing across sessions**: agent searches for "payments-svc retry
 policy", gets zero hits, reasons from scratch; next session a
 different agent does the same search, gets the same zero hits,
 reasons from scratch again. There's no record that "we checked here,
-the team has no policy on this — don't re-search for 30 days."
+the team has no policy on this — don't re-search for 14 days."
 
 `loreguard absent` records that signal:
 
@@ -717,20 +717,28 @@ loreguard absent list                       # active markers
 loreguard absent list --include-expired     # everything including aged-out
 ```
 
-The MCP companion is `record_absence({ query, reason, repo?,
-expiresInDays? })` — agents call it when they've searched, found
-nothing, *and* are confident the gap is real. After that, the next
-`search_lore` on the same normalised query surfaces the marker so
-the next agent knows it's an acknowledged gap rather than an
-oversight.
+> **MCP-side `record_absence` is off by default** because it writes
+> retrieval-affecting state without human review. The CLI
+> `loreguard absent record` is the v0.1 default path — agents
+> surface the gap, humans record the marker. To let agents write
+> markers directly, the operator sets `LOREGUARD_ALLOW_MCP_ABSENCE=1`
+> in the MCP server's environment.
 
-**Markers self-expire** (default 30 days, max 365). Stale "we
+When MCP writes are enabled, the companion is `record_absence({ query,
+reason, repo?, expiresInDays? })` — agents call it when they've
+searched, found nothing, *and* are confident the gap is real. After
+that, the next `search_lore` on the same normalised query surfaces
+the marker so the next agent knows it's an acknowledged gap rather
+than an oversight.
+
+**Markers self-expire** (default 14 days, max 365). Stale "we
 checked" claims age out automatically rather than becoming permanent
-dead-end annotations. No review gate — low-stakes, time-bounded,
-distinct from drafts. Query normalisation is order-independent and
-case-insensitive: `"retry policy payments-svc"` and `"payments-svc
-Retry POLICY"` share a marker, but `"backoff strategy"` is a
-separate (deliberately unsynonymised) gap.
+dead-end annotations. Once MCP writes are enabled there's no review
+gate (low-stakes, time-bounded, distinct from drafts) — that's the
+whole reason the gate exists at the MCP layer. Query normalisation
+is order-independent and case-insensitive: `"retry policy
+payments-svc"` and `"payments-svc Retry POLICY"` share a marker, but
+`"backoff strategy"` is a separate (deliberately unsynonymised) gap.
 
 ### Stats — local read tracking
 
