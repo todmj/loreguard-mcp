@@ -438,13 +438,17 @@ describe("core/lore", () => {
         body: "b",
       });
       deprecateLore(db, lore.id);
-      expect(searchLore(db, { query: "Old migration policy" })).toEqual([]);
+      // OR-mode means other beforeEach records sharing tokens ("migration")
+      // may surface — the contract being tested is that the deprecated
+      // record's id is excluded, not that the result is empty.
+      const hits = searchLore(db, { query: "Old migration policy" });
+      expect(hits.map((h) => h.id)).not.toContain(lore.id);
       const incl = searchLore(db, {
         query: "Old migration policy",
         includeDeprecated: true,
       });
-      expect(incl.length).toBe(1);
-      expect(incl[0]!.status).toBe("deprecated");
+      expect(incl.map((h) => h.id)).toContain(lore.id);
+      expect(incl.find((h) => h.id === lore.id)!.status).toBe("deprecated");
     });
 
     it("excludes superseded by default", () => {
@@ -1043,6 +1047,56 @@ describe("core/lore", () => {
       expect(
         searchLore(db, { query: "timez", prefix: true }).length,
       ).toBeGreaterThan(0);
+    });
+
+    it("multi-token queries use OR — records matching ANY token surface", () => {
+      // Real dogfood: 5 queries returned 0 hits because FTS5 default
+      // is AND and no single record contained EVERY token. Switching
+      // to OR means partial matches surface; bm25 ranks them.
+      const kafka = addLore(db, {
+        title: "Kafka retention is 24 hours",
+        summary: "s",
+        body: "topics retain 24h or compacted",
+      });
+      const auth = addLore(db, {
+        title: "JWT bearer tokens for entity-registry",
+        summary: "s",
+        body: "auth uses JWT and API keys",
+      });
+      // No record contains BOTH "deployment" and "kafka". With AND
+      // semantics this would return 0. With OR, the kafka record
+      // surfaces on the "kafka" token alone.
+      const hits = searchLore(db, { query: "deployment kafka" });
+      expect(hits.map((h) => h.id)).toContain(kafka.id);
+      expect(hits.map((h) => h.id)).not.toContain(auth.id);
+    });
+
+    it("multi-token: records matching MORE tokens rank above records matching FEWER (bm25 effect)", () => {
+      const both = addLore(db, {
+        title: "Argon2id password hashing policy",
+        summary: "argon2id is the platform default",
+        body: "use m=64MB; bcrypt out.",
+      });
+      const onlyPassword = addLore(db, {
+        title: "Password reset emails",
+        summary: "transactional flow",
+        body: "send via SES; tokens single-use.",
+      });
+      const onlyArgon = addLore(db, {
+        title: "Argon2id parameter tuning",
+        summary: "memory-hard config",
+        body: "m=64MB, t=3, p=4 is the standard.",
+      });
+      const hits = searchLore(db, { query: "argon2id password" });
+      // All three surface (OR mode); the record containing BOTH
+      // tokens ranks first via bm25.
+      expect(hits.length).toBeGreaterThanOrEqual(3);
+      expect(hits[0]!.id).toBe(both.id);
+      // The two single-match records both appear, order between
+      // them depends on column weights but not asserted here.
+      const ids = hits.map((h) => h.id);
+      expect(ids).toContain(onlyPassword.id);
+      expect(ids).toContain(onlyArgon.id);
     });
 
     it("prefix mode leaves <3-char tokens as exact-match (no slow 1-char prefix)", () => {

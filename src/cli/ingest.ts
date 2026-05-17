@@ -369,15 +369,34 @@ export function parseMarkdownItems(
     const sections: RawSection[] = [];
     let cur: RawSection | null = null;
     for (const line of scope) {
-      const m = /^(###+)\s+(.+?)\s*$/.exec(line.raw);
+      // Match ANY heading (H1+); the level decides what to do.
+      // Real dogfood showed the prior `###+` regex absorbed H1/H2
+      // headings into the previous H3 section's body — Logout's
+      // body grew from ~600 chars to 3112 by eating the whole rest
+      // of the file past its H3, then FTS surfaced phantom matches
+      // because the body contained tokens from unrelated sections.
+      const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line.raw);
       if (m) {
-        if (cur) sections.push(cur);
-        cur = {
-          startLine: line.no,
-          level: m[1]!.length,
-          headingText: m[2]!.trim(),
-          body: [],
-        };
+        const level = m[1]!.length;
+        if (level <= 3) {
+          // Any H1 / H2 / H3 closes the current H3 section. We only
+          // START a new section for H3 (matching the original intent
+          // of "subsection mode = H3 records").
+          if (cur) sections.push(cur);
+          cur =
+            level === 3
+              ? {
+                  startLine: line.no,
+                  level,
+                  headingText: m[2]!.trim(),
+                  body: [],
+                }
+              : null;
+        } else if (cur) {
+          // H4+ stays inside the current H3 section's body — it's a
+          // sub-heading inside the section, not a new section.
+          cur.body.push(line.raw);
+        }
       } else if (cur) {
         cur.body.push(line.raw);
       }
