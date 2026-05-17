@@ -3,6 +3,9 @@ dist/
 *.log
 .DS_Store
 
+# Build artefacts from `npm pack` — never commit; rebuild on demand.
+*.tgz
+
 # Local lore database — never commit anyone's actual notes.
 *.db
 *.db-journal
