@@ -171,12 +171,23 @@ COMMANDS
                             zero reads in N days), recent activity.
                             Opt out of read tracking via
                             LOREGUARD_NO_TELEMETRY=1.
-  ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run]
-                            Bulk-import drafts from Markdown files.
-                            Splits on H3 subsections or top-level
-                            bullets. Each candidate becomes a DRAFT
-                            tagged 'imported' — review with
-                            \`loreguard review\`.
+  ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run] [--include-intent-files]
+                            Bulk-import drafts from **clean knowledge
+                            docs** (ADRs, SECURITY.md, MIGRATION.md,
+                            INTEGRATION_GUIDE.md). NOT for plans /
+                            roadmaps / progress trackers — those are
+                            skipped by default via filename deny-list
+                            (plan/roadmap/progress/todo/backlog/spec/
+                            usability/status/execution). Override with
+                            --include-intent-files when you mean it.
+                            Within allowed files, a content-shape
+                            filter rejects TOC bullets, date-stamped
+                            status headings, and items with no rule-
+                            or fact-markers and a short body. ALWAYS
+                            runs --dry-run first to see what survives.
+                            For messy repos, use the
+                            /loreguard-onboard skill — it uses agent
+                            judgement instead of chunking.
   hooks install [--project] [--dry-run]
                             Wire the Claude Code Stop-hook for
                             session-end review nudges. Writes
@@ -1588,7 +1599,12 @@ async function cmdIngestMd(
 ): Promise<number> {
   const { globSync } = await import("node:fs");
   const { basename } = await import("node:path");
-  const { deriveItemSource, parseMarkdownItems } = await import("./ingest.js");
+  const {
+    deriveItemSource,
+    intentFilenameDenied,
+    parseMarkdownItems,
+    scoreCandidate,
+  } = await import("./ingest.js");
   if (args.positionals.length === 0) {
     process.stderr.write(
       "loreguard: ingest-md requires at least one file/glob argument\n",
@@ -1600,6 +1616,7 @@ async function cmdIngestMd(
   const repoFlags = getStringArray(args.flags, "repo");
   const baseSource = getString(args.flags, "source");
   const dryRun = getBool(args.flags, "dry-run");
+  const includeIntentFiles = getBool(args.flags, "include-intent-files");
   // Auto-detect repo if user didn't supply one, matching the induct
   // ladder so a bare `loreguard ingest-md ./CLAUDE.md` Just Works.
   const repos =
@@ -1628,27 +1645,64 @@ async function cmdIngestMd(
     return 1;
   }
 
-  const db = openDb();
-  let drafted = 0;
+  // Diagnostic counters surfaced in --dry-run; tracked always so the
+  // final non-dry-run summary can report what was filtered out too.
   let scannedFiles = 0;
+  let skippedIntentFiles = 0;
+  let chunksEvaluated = 0;
+  let drafted = 0;
+  const rejectionCounts: Record<string, number> = {};
+  function bumpRejection(reason: string): void {
+    rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1;
+  }
+
+  const db = openDb();
   try {
     for (const file of files) {
       scannedFiles++;
+      const fileBase = basename(file).replace(/\.md$/, "");
+      const intentMatch = intentFilenameDenied(fileBase);
+      if (intentMatch && !includeIntentFiles) {
+        skippedIntentFiles++;
+        if (dryRun) {
+          process.stdout.write(
+            `  ${file}: SKIPPED (filename matches deny-list: "${intentMatch}"; pass --include-intent-files to override)\n`,
+          );
+        }
+        continue;
+      }
       const text = readFileSync(file, "utf8");
       const items = parseMarkdownItems(text, { section });
-      const fileBase = basename(file).replace(/\.md$/, "");
       const baseTags = [
         "imported",
         `imported-from:${fileBase}`,
         ...extraTags,
       ];
+      let perFileCandidates = 0;
+      let perFileRejected = 0;
       for (const item of items) {
+        chunksEvaluated++;
+        const scoring = scoreCandidate(item);
+        if (!scoring.pass) {
+          perFileRejected++;
+          for (const r of scoring.reasons) bumpRejection(r);
+          if (dryRun) {
+            process.stdout.write(
+              `    REJECT ${file}:L${item.sourceLine}  "${item.title.slice(0, 60)}"  [${scoring.reasons.join("; ")}]\n`,
+            );
+          }
+          continue;
+        }
+        perFileCandidates++;
         const source = deriveItemSource(baseSource, item.sourceLine);
         if (dryRun) {
           process.stdout.write(
-            `  [dry-run] ${file}:L${item.sourceLine}  ${item.title}\n`,
+            `    DRAFT  ${file}:L${item.sourceLine}  "${item.title.slice(0, 60)}"  [score=${scoring.score}; ${scoring.reasons.join("; ") || "no markers"}]\n`,
           );
         } else {
+          // suggestLore enforces status='draft' regardless of caller —
+          // bulk ingest never produces active lore. The reviewer is the
+          // gate, as always.
           suggestLore(db, {
             title: item.title,
             summary: item.summary,
@@ -1664,14 +1718,39 @@ async function cmdIngestMd(
         }
         drafted++;
       }
+      if (dryRun) {
+        process.stdout.write(
+          `  ${file}: ${items.length} chunk(s) → ${perFileCandidates} candidate(s), ${perFileRejected} rejected\n`,
+        );
+      }
+    }
+    // Summary — same shape for dry-run and real run.
+    const verb = dryRun ? "would draft" : "drafted";
+    process.stdout.write(
+      `\nloreguard ingest-md: ${verb} ${drafted} record(s) from ${scannedFiles - skippedIntentFiles}/${scannedFiles} file(s)\n`,
+    );
+    if (skippedIntentFiles > 0) {
+      process.stdout.write(
+        `  ${skippedIntentFiles} file(s) skipped (filename deny-list — plan/roadmap/progress/etc.; --include-intent-files overrides)\n`,
+      );
+    }
+    if (chunksEvaluated > 0) {
+      const rejected = chunksEvaluated - drafted;
+      process.stdout.write(
+        `  ${chunksEvaluated} chunk(s) evaluated; ${rejected} rejected:\n`,
+      );
+      const sorted = Object.entries(rejectionCounts).sort(
+        (a, b) => b[1] - a[1],
+      );
+      for (const [reason, n] of sorted) {
+        process.stdout.write(`    ${n.toString().padStart(4)}× ${reason}\n`);
+      }
     }
     if (dryRun) {
+      process.stdout.write(`  (dry-run — nothing written)\n`);
+    } else if (drafted > 0) {
       process.stdout.write(
-        `loreguard: would draft ${drafted} record(s) from ${scannedFiles} file(s) (dry-run — nothing written)\n`,
-      );
-    } else {
-      process.stdout.write(
-        `loreguard: drafted ${drafted} record(s) from ${scannedFiles} file(s). Review with \`loreguard review\`.\n`,
+        `  Review the drafts with \`loreguard review\` (or scope: \`loreguard review --tag imported\`).\n`,
       );
     }
     return 0;
