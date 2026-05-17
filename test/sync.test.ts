@@ -11,6 +11,7 @@
  */
 import BetterSqlite3 from "better-sqlite3";
 import {
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -26,6 +27,7 @@ import { addLore, getLore, suggestLore } from "../src/core/lore.js";
 import { runMigrations } from "../src/db/migrations.js";
 import {
   exportToDir,
+  findLoreguardDirs,
   importFromDir,
   parseFrontmatter,
   renderLoreMarkdown,
@@ -458,5 +460,97 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
     expect(
       fresh.prepare("SELECT COUNT(*) AS n FROM lore").get(),
     ).toEqual({ n: 0 });
+  });
+});
+
+describe("findLoreguardDirs — cross-repo discovery (`sync pull`)", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "loreguard-pull-"));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  // Build a fake workspace tree and seed .loreguard/ dirs in chosen
+  // places. Each marker file is named with a valid lore-id pattern so
+  // the heuristic accepts the dir.
+  function seedLoreDir(path: string, ids: string[] = ["abcd2345"]): void {
+    mkdirSync(path, { recursive: true });
+    for (const id of ids) {
+      writeFileSync(join(path, `${id}.md`), `---\nid: ${id}\n---\n`);
+    }
+  }
+
+  it("discovers every .loreguard/ under the parent that contains <id>.md files", () => {
+    seedLoreDir(join(root, "client-app", ".loreguard"));
+    seedLoreDir(join(root, "backend-app", ".loreguard"));
+    seedLoreDir(join(root, "infra", "terraform-mod", ".loreguard"));
+    const found = findLoreguardDirs(root);
+    expect(found).toHaveLength(3);
+    expect(found.map((p) => p.replace(root + "/", "")).sort()).toEqual([
+      "backend-app/.loreguard",
+      "client-app/.loreguard",
+      "infra/terraform-mod/.loreguard",
+    ]);
+  });
+
+  it("skips .loreguard/ dirs that contain no <id>.md files (avoid false positives)", () => {
+    // Some unrelated tool happens to use the same name.
+    mkdirSync(join(root, "junk", ".loreguard"), { recursive: true });
+    writeFileSync(join(root, "junk", ".loreguard", "README"), "not lore");
+    expect(findLoreguardDirs(root)).toEqual([]);
+  });
+
+  it("does not descend into a discovered .loreguard/ itself", () => {
+    seedLoreDir(join(root, "repo", ".loreguard"));
+    // A nested directory inside the discovered one — should not be reported.
+    mkdirSync(join(root, "repo", ".loreguard", "drafts", ".loreguard"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, "repo", ".loreguard", "drafts", ".loreguard", "abcd2345.md"),
+      "---\n",
+    );
+    const found = findLoreguardDirs(root);
+    expect(found).toEqual([join(root, "repo", ".loreguard")]);
+  });
+
+  it("skips heavy directories (node_modules, .git, dist, etc.)", () => {
+    // Seed a real one to ensure walking still works.
+    seedLoreDir(join(root, "repo", ".loreguard"));
+    // And one buried inside skip-listed paths — should NOT be found.
+    seedLoreDir(join(root, "repo", "node_modules", "pkg", ".loreguard"));
+    seedLoreDir(join(root, "repo", "dist", ".loreguard"));
+    seedLoreDir(join(root, "repo", ".git", "hooks", ".loreguard"));
+    seedLoreDir(join(root, "repo", "vendor", ".loreguard"));
+    const found = findLoreguardDirs(root);
+    expect(found).toEqual([join(root, "repo", ".loreguard")]);
+  });
+
+  it("returns sorted absolute paths so import order is stable", () => {
+    seedLoreDir(join(root, "z-last", ".loreguard"));
+    seedLoreDir(join(root, "a-first", ".loreguard"));
+    seedLoreDir(join(root, "m-middle", ".loreguard"));
+    const found = findLoreguardDirs(root);
+    expect(found).toEqual(found.slice().sort());
+    expect(found[0]).toContain("a-first");
+    expect(found[2]).toContain("z-last");
+  });
+
+  it("returns [] for an empty / non-existent / unreadable parent", () => {
+    expect(findLoreguardDirs(join(root, "no-such-dir"))).toEqual([]);
+    // Empty dir → no .loreguard/ found
+    expect(findLoreguardDirs(root)).toEqual([]);
+  });
+
+  it("skips other hidden directories that aren't in the skip list", () => {
+    // .vscode shouldn't be walked into (hidden), but our real walker
+    // skips ALL dirs starting with `.` other than `.loreguard` itself.
+    seedLoreDir(join(root, "repo", ".loreguard"));
+    seedLoreDir(join(root, ".vscode-private", ".loreguard"));
+    seedLoreDir(join(root, ".tmp", ".loreguard"));
+    const found = findLoreguardDirs(root);
+    expect(found).toEqual([join(root, "repo", ".loreguard")]);
   });
 });
