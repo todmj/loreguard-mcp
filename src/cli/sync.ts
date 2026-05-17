@@ -324,6 +324,18 @@ export interface ImportSyncResult {
    */
   readonly skippedNewer: number;
   /**
+   * Files that imported successfully but reference a `supersededBy` id
+   * that doesn't exist locally (and isn't elsewhere in the batch).
+   * The import still proceeds — PR review is the trust gate per the
+   * docs — but the reference is dead until the target lands. Surfaced
+   * in the CLI summary as a warning so the operator notices.
+   */
+  readonly danglingSupersededBy: ReadonlyArray<{
+    file: string;
+    id: string;
+    supersededBy: string;
+  }>;
+  /**
    * Files that failed schema/id/enum validation. One entry per file;
    * the reason is shown verbatim in the CLI summary.
    */
@@ -355,6 +367,11 @@ export function importFromDir(
   let updated = 0;
   let skippedNewer = 0;
   const skipped: Array<{ file: string; reason: string }> = [];
+  const danglingSupersededBy: Array<{
+    file: string;
+    id: string;
+    supersededBy: string;
+  }> = [];
   let entries: string[];
   try {
     entries = readdirSync(dir).filter((f) => f.endsWith(".md"));
@@ -364,6 +381,17 @@ export function importFromDir(
         err instanceof Error ? err.message : String(err)
       }`,
     );
+  }
+  // Two-pass setup: scan the file list once to collect the set of ids
+  // about to land in this batch, so a record that supersedes another
+  // record in the same import isn't flagged as dangling.
+  const incomingIds = new Set<string>();
+  for (const file of entries) {
+    const text = readFileSync(join(dir, file), "utf8");
+    const fm = parseFrontmatter(text)?.frontmatter;
+    if (fm && typeof fm["id"] === "string" && LORE_ID_RE.test(fm["id"])) {
+      incomingIds.add(fm["id"]);
+    }
   }
   for (const file of entries) {
     const path = join(dir, file);
@@ -521,8 +549,30 @@ export function importFromDir(
     });
     if (result.created) created++;
     else updated++;
+    // Dangling supersededBy: the imported record claims to be replaced
+    // by a target id that is neither already in the local DB nor part
+    // of this same batch. Allowed (PR review is the trust gate) but
+    // surfaced so the operator notices a dead reference.
+    if (
+      typeof supersededByRaw === "string" &&
+      !incomingIds.has(supersededByRaw) &&
+      !db.prepare("SELECT 1 FROM lore WHERE id = ?").get(supersededByRaw)
+    ) {
+      danglingSupersededBy.push({
+        file,
+        id,
+        supersededBy: supersededByRaw,
+      });
+    }
   }
-  return { created, updated, skippedNewer, skipped, dryRun: !!opts.dryRun };
+  return {
+    created,
+    updated,
+    skippedNewer,
+    danglingSupersededBy,
+    skipped,
+    dryRun: !!opts.dryRun,
+  };
 }
 
 function isStringArray(v: unknown): v is string[] {

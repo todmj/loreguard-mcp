@@ -87,10 +87,12 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     },
   },
   {
-    // NOTE: 002-conflicts-with lands on a sibling branch
-    // (feature/conflict-records); when both merge, this 003 sits cleanly
-    // after it. Migration order is array-order with idempotency by id.
-    id: "003-absence-markers",
+    // External reviewer flagged the 001/003 gap as a release-hygiene
+    // smell — public installs shouldn't ship with a missing migration
+    // id. Sibling branch `feature/conflict-records` uses 002; whichever
+    // lands second will need a renumber + rebase. Migration order is
+    // array-order with idempotency by id.
+    id: "002-absence-markers",
     up(db) {
       // Verified-absence: record "we checked, the team has no policy
       // on this — don't re-search for 30 days". When search_lore

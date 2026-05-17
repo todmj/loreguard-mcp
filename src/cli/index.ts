@@ -768,6 +768,16 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
         `  ${r.skippedNewer} record(s) skipped — local copy is newer (pass --force to overwrite)\n`,
       );
     }
+    if (r.danglingSupersededBy.length > 0) {
+      process.stderr.write(
+        `  WARNING — ${r.danglingSupersededBy.length} record(s) reference a supersededBy id that doesn't exist locally:\n`,
+      );
+      for (const d of r.danglingSupersededBy) {
+        process.stderr.write(
+          `    ${d.file}: ${d.id} → ${d.supersededBy} (dead reference until the target lands)\n`,
+        );
+      }
+    }
     if (r.skipped.length > 0) {
       process.stdout.write(`  rejected ${r.skipped.length} file(s):\n`);
       for (const s of r.skipped) {
@@ -1236,9 +1246,17 @@ async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
       }
       const repo = getString(args.flags, "repo");
       const expiresInDaysRaw = getString(args.flags, "expires-days");
-      const expiresInDays = expiresInDaysRaw
-        ? Math.max(1, Math.min(365, Number(expiresInDaysRaw)))
-        : undefined;
+      let expiresInDays: number | undefined;
+      if (expiresInDaysRaw !== undefined) {
+        const n = Number(expiresInDaysRaw);
+        if (!Number.isFinite(n) || !Number.isInteger(n)) {
+          process.stderr.write(
+            `loreguard: --expires-days must be an integer (got ${JSON.stringify(expiresInDaysRaw)})\n`,
+          );
+          return 2;
+        }
+        expiresInDays = Math.max(1, Math.min(365, n));
+      }
       const result = recordAbsence(db, {
         query,
         reason,
@@ -1286,9 +1304,27 @@ async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
 async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
   const { recentActivity, renderStatsReport, retireCandidates, topCitedRecords } =
     await import("./stats.js");
-  const top = Number(getString(args.flags, "top") ?? "10");
-  const sinceDays = Number(getString(args.flags, "since-days") ?? "90");
-  const quietForDays = Number(getString(args.flags, "quiet-for-days") ?? "180");
+  // Numeric flags: refuse non-integer input early rather than passing
+  // NaN through to better-sqlite3 (which raises an unhelpful "datatype
+  // mismatch" deep in the call stack).
+  function parseInt1(flag: string, fallback: number): number | null {
+    const raw = getString(args.flags, flag);
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+      process.stderr.write(
+        `loreguard stats: --${flag} must be a positive integer (got ${JSON.stringify(raw)})\n`,
+      );
+      return null;
+    }
+    return n;
+  }
+  const top = parseInt1("top", 10);
+  if (top === null) return 2;
+  const sinceDays = parseInt1("since-days", 90);
+  if (sinceDays === null) return 2;
+  const quietForDays = parseInt1("quiet-for-days", 180);
+  if (quietForDays === null) return 2;
   const wantsJson = getBool(args.flags, "json");
   const retireOnly = getBool(args.flags, "retire");
   const db = openDb();

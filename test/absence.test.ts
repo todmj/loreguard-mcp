@@ -78,7 +78,7 @@ describe("recordAbsence + findActiveAbsence", () => {
     expect(hit?.reason).toBe("team has no policy yet; ad hoc per incident");
   });
 
-  it("default expiry is ~30 days from now", () => {
+  it("default expiry is ~14 days from now (tightened from 30 per external review)", () => {
     const before = Date.now();
     const r = recordAbsence(db, {
       query: "q",
@@ -87,8 +87,8 @@ describe("recordAbsence + findActiveAbsence", () => {
     });
     const expiresMs = Date.parse(r.expiresAt);
     const diffDays = (expiresMs - before) / 86400_000;
-    expect(diffDays).toBeGreaterThan(29.9);
-    expect(diffDays).toBeLessThan(30.1);
+    expect(diffDays).toBeGreaterThan(13.9);
+    expect(diffDays).toBeLessThan(14.1);
   });
 
   it("custom expiresInDays is honoured", () => {
