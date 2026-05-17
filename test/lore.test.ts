@@ -919,6 +919,53 @@ describe("core/lore", () => {
     });
   });
 
+  describe("searchLore — batched repo/tag hydration (N+1 guard)", () => {
+    it("hydrates 10 results' repos+tags in two queries, not 2*N", () => {
+      // Seed 10 active records, each with a couple of repos + tags.
+      for (let i = 0; i < 10; i++) {
+        addLore(db, {
+          title: `Topic ${i} hashing convention`,
+          summary: "s",
+          body: "B",
+          repos: [`svc-${i % 3}`, "shared-svc"],
+          tags: ["security", `topic-${i}`],
+        });
+      }
+      // Wrap prepare/all to count SELECTs against the lore_repos /
+      // lore_tags side tables. The N+1 regression would push this to
+      // 2*10 = 20; the batched path should issue 1 per side table.
+      let sideTableQueryCount = 0;
+      const origPrepare = db.prepare.bind(db);
+      type Stmt = ReturnType<typeof origPrepare>;
+      (db as unknown as { prepare: (sql: string) => Stmt }).prepare = (
+        sql: string,
+      ): Stmt => {
+        const stmt = origPrepare(sql);
+        if (/FROM\s+lore_(repos|tags)\b/i.test(sql)) {
+          const origAll = stmt.all.bind(stmt);
+          stmt.all = ((...args: unknown[]) => {
+            sideTableQueryCount++;
+            return origAll(...args);
+          }) as typeof stmt.all;
+        }
+        return stmt;
+      };
+      try {
+        const hits = searchLore(db, { query: "hashing convention", limit: 10 });
+        expect(hits).toHaveLength(10);
+        for (const h of hits) {
+          expect(h.repos.length).toBeGreaterThan(0);
+          expect(h.tags.length).toBeGreaterThan(0);
+        }
+        // 2 batched queries total — one against lore_repos, one against
+        // lore_tags. The previous N+1 path would have issued 20.
+        expect(sideTableQueryCount).toBe(2);
+      } finally {
+        (db as unknown as { prepare: typeof origPrepare }).prepare = origPrepare;
+      }
+    });
+  });
+
   describe("conflict surfacing in searchLore", () => {
     /**
      * Two active records sharing a repo and a tag are flagged in each

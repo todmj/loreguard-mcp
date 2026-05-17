@@ -1,9 +1,9 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execSync } from "node:child_process";
 
-import { openDb } from "../db/index.js";
+import { defaultDbPath, openDb } from "../db/index.js";
 import type { LoreConfidence } from "../db/types.js";
 import {
   addLore,
@@ -136,10 +136,11 @@ EXAMPLES
 `;
 
 async function cmdInit(): Promise<number> {
-  const db = openDb();
+  const path = defaultDbPath();
+  const db = openDb(path);
   db.close();
   // openDb runs migrations and creates the file with 0600 perms.
-  process.stdout.write("loreguard: initialised at ~/.loreguard/lore.db\n");
+  process.stdout.write(`loreguard: initialised at ${path}\n`);
   return 0;
 }
 
@@ -687,6 +688,13 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
       process.stdout.write(
         `loreguard: wrote ${r.written.length} record(s) to ${dir}\n`,
       );
+      if (r.restrictedWritten > 0) {
+        process.stderr.write(
+          `loreguard: WARNING — ${r.restrictedWritten} restricted record(s) written to ${dir}.\n` +
+            `  Each file was chmod'd to 0600, but the directory itself is not locked down.\n` +
+            `  Do NOT commit these files unless your repo is private and you accept the risk.\n`,
+        );
+      }
       if (r.excluded.restricted > 0) {
         process.stdout.write(
           `  ${r.excluded.restricted} restricted record(s) held back (pass --include-restricted to include)\n`,
@@ -700,15 +708,30 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
       return 0;
     }
     // import
-    const r = importFromDir(db, dir, { includeRestricted });
+    const force = getBool(args.flags, "force");
+    const dryRun = getBool(args.flags, "dry-run");
+    const r = importFromDir(db, dir, {
+      includeRestricted,
+      force,
+      dryRun,
+    });
+    const verb = r.dryRun ? "would import" : "imported";
     process.stdout.write(
-      `loreguard: imported ${r.created} new + ${r.updated} updated record(s) from ${dir}\n`,
+      `loreguard: ${verb} ${r.created} new + ${r.updated} updated record(s) from ${dir}\n`,
     );
+    if (r.skippedNewer > 0) {
+      process.stdout.write(
+        `  ${r.skippedNewer} record(s) skipped — local copy is newer (pass --force to overwrite)\n`,
+      );
+    }
     if (r.skipped.length > 0) {
-      process.stdout.write(`  skipped ${r.skipped.length} file(s):\n`);
+      process.stdout.write(`  rejected ${r.skipped.length} file(s):\n`);
       for (const s of r.skipped) {
         process.stdout.write(`    ${s.file}: ${s.reason}\n`);
       }
+    }
+    if (r.dryRun) {
+      process.stdout.write(`  (dry-run — no changes written)\n`);
     }
     return 0;
   } finally {
@@ -800,26 +823,46 @@ async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
 }
 
 /**
- * Best-effort: read `git config --get remote.origin.url` and parse it
- * into a short repo name. Returns null on any failure (not in a git
- * repo, no remote, weird URL shape). The caller falls back to asking.
+ * Best-effort autodetect of a repo name for the current directory.
+ *
+ * Order of preference:
+ *   1. `git config --get remote.origin.url` parsed to a short name —
+ *      this is the most canonical when present (a clone of
+ *      `github.com/foo/payments-svc` should tag drafts as
+ *      `payments-svc` even if the local folder is `payments-clone`).
+ *   2. `basename(process.cwd())` — what the user almost always wants
+ *      when they ran `loreguard induct` inside a folder they care
+ *      about, with no remote configured (local-only repo, just-init'd
+ *      project, monorepo subdir, etc.).
+ *
+ * Returns `{ name, source }` so the caller can phrase the
+ * confirmation prompt honestly ("Detected repo 'foo' from git remote"
+ * vs "from current directory"). Returns null only when both fall
+ * through (cwd basename is empty / "/" — exceedingly rare).
  */
-function detectRepoName(): string | null {
+function detectRepoName(): { name: string; source: "git" | "cwd" } | null {
   try {
     const out = execSync("git config --get remote.origin.url", {
       stdio: ["ignore", "pipe", "ignore"],
     })
       .toString()
       .trim();
-    return shortRepoNameFromRemote(out);
+    const fromRemote = shortRepoNameFromRemote(out);
+    if (fromRemote) return { name: fromRemote, source: "git" };
   } catch {
-    return null;
+    // No git repo, no remote, or weird URL — fall through to cwd.
   }
+  const fromCwd = basename(process.cwd());
+  if (fromCwd && fromCwd !== "/" && fromCwd !== ".") {
+    return { name: fromCwd, source: "cwd" };
+  }
+  return null;
 }
 
 async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
   // Repo scope. --repo can be passed multiple times. If absent, try to
-  // autodetect; if that fails, prompt once (skippable).
+  // autodetect from git remote, then fall back to the cwd basename,
+  // then prompt as a last resort.
   const repoFlags = getStringArray(args.flags, "repo");
   let repos: string[];
   if (repoFlags.length > 0) {
@@ -827,18 +870,26 @@ async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
   } else {
     const detected = detectRepoName();
     if (detected) {
+      const sourceLabel =
+        detected.source === "git" ? "git remote" : "current directory";
       const confirm = (
         await prompt(
-          `Detected repo '${detected}' — tag drafts with this? [Y/n] `,
+          `Tag drafts with repo '${detected.name}' (from ${sourceLabel})? [Y/n/type a different name] `,
         )
-      )
-        .trim()
-        .toLowerCase();
-      repos = confirm === "n" || confirm === "no" ? [] : [detected];
+      ).trim();
+      const lower = confirm.toLowerCase();
+      if (lower === "n" || lower === "no") {
+        repos = [];
+      } else if (confirm === "" || lower === "y" || lower === "yes") {
+        repos = [detected.name];
+      } else {
+        // Anything else is treated as an override name.
+        repos = [confirm];
+      }
     } else {
       const typed = (
         await prompt(
-          "No git remote detected. Repo name for these drafts (blank to skip): ",
+          "Repo name to tag these drafts with (blank to skip): ",
         )
       ).trim();
       repos = typed ? [typed] : [];

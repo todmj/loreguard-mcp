@@ -37,6 +37,14 @@ const ALLOWED_STATUS = new Set<LoreStatus>([
 ]);
 const ALLOWED_CONFIDENCE = new Set<LoreConfidence>(["low", "medium", "high"]);
 
+/**
+ * Lore ids are 8 lowercase chars from the Crockford-style alphabet
+ * `[a-z2-9]` (see core/ids.ts). Anything else in frontmatter is a typo
+ * or an attempt to inject a non-conforming key — import refuses it so a
+ * stray `id: lol_abc123` doesn't become a permanent ghost record.
+ */
+const LORE_ID_RE = /^[a-z2-9]{8}$/;
+
 // ── Frontmatter parser ────────────────────────────────────────────────
 
 export interface ParsedFile {
@@ -185,6 +193,13 @@ export interface ExportSyncOptions {
 export interface ExportSyncResult {
   readonly written: ReadonlyArray<string>;
   readonly excluded: { restricted: number; drafts: number };
+  /**
+   * Restricted records that WERE written (because the caller opted in
+   * with `includeRestricted: true`). The CLI uses this to surface a
+   * security warning, since these files were also chmod'd to 0600
+   * rather than the default 0644.
+   */
+  readonly restrictedWritten: number;
   /** Paths removed by `clean: true`. Empty when the flag is off. */
   readonly removed: ReadonlyArray<string>;
 }
@@ -251,19 +266,26 @@ export function exportToDir(
     }
   }
   const written: string[] = [];
+  let restrictedWritten = 0;
   for (const lore of filtered) {
     const path = join(dir, `${lore.id}.md`);
     writeFileSync(path, renderLoreMarkdown(lore), { encoding: "utf8" });
+    // Restricted records get the same 0600 lockdown as the JSON export
+    // (see cmdExport in cli/index.ts). Non-restricted records stay
+    // world-readable so they can be committed and reviewed normally.
+    const mode = lore.restricted ? 0o600 : 0o644;
     try {
-      chmodSync(path, 0o644);
+      chmodSync(path, mode);
     } catch {
       // best-effort
     }
+    if (lore.restricted) restrictedWritten++;
     written.push(path);
   }
   return {
     written,
     excluded: { restricted: excludedRestricted, drafts: excludedDrafts },
+    restrictedWritten,
     removed,
   };
 }
@@ -278,19 +300,47 @@ export interface ImportSyncOptions {
    * git history as the security boundary.
    */
   readonly includeRestricted?: boolean;
+  /**
+   * If true, overwrite local records even when the local copy is newer
+   * (or has the same updatedAt). Off by default — safe-import is the
+   * intended behaviour, since an unconditional upsert silently clobbers
+   * a teammate's later edits if you import a stale branch.
+   */
+  readonly force?: boolean;
+  /**
+   * If true, do everything except write to the DB. Used by callers
+   * (`--dry-run`) that want to surface the import plan first.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface ImportSyncResult {
   readonly created: number;
   readonly updated: number;
+  /**
+   * Records whose local copy is strictly newer than the incoming file.
+   * Equal timestamps fall through and re-upsert idempotently. The CLI
+   * surfaces this as a hint that `--force` is needed to overwrite.
+   */
+  readonly skippedNewer: number;
+  /**
+   * Files that failed schema/id/enum validation. One entry per file;
+   * the reason is shown verbatim in the CLI summary.
+   */
   readonly skipped: ReadonlyArray<{ file: string; reason: string }>;
+  /** True when `dryRun` was set; no DB writes happened. */
+  readonly dryRun: boolean;
 }
 
 /**
  * Read every `*.md` file in `dir` and upsert each one. Files without
- * frontmatter, or with frontmatter that's missing required fields
- * (id, title, summary, status), are skipped with a reason rather
- * than crashing the import.
+ * frontmatter, or with frontmatter that fails id-shape / enum / type
+ * validation, are skipped with a reason rather than crashing the import
+ * (or — worse — getting upserted as ghost records).
+ *
+ * Default mode is **safe-import**: a local record whose `updatedAt` is
+ * >= the incoming file's `updatedAt` is left alone. Pass `force: true`
+ * to overwrite regardless. Pass `dryRun: true` to plan without writing.
  *
  * Per the PR-is-the-review-gate decision, imports respect whatever
  * status the file declares. Restricted records are excluded by
@@ -303,6 +353,7 @@ export function importFromDir(
 ): ImportSyncResult {
   let created = 0;
   let updated = 0;
+  let skippedNewer = 0;
   const skipped: Array<{ file: string; reason: string }> = [];
   let entries: string[];
   try {
@@ -327,8 +378,11 @@ export function importFromDir(
     const title = fm["title"];
     const summary = fm["summary"];
     const status = fm["status"];
-    if (typeof id !== "string" || id.length === 0) {
-      skipped.push({ file, reason: "missing or invalid id" });
+    if (typeof id !== "string" || !LORE_ID_RE.test(id)) {
+      skipped.push({
+        file,
+        reason: `invalid id ${JSON.stringify(id)} (expected 8 chars from [a-z2-9])`,
+      });
       continue;
     }
     if (typeof title !== "string" || title.length === 0) {
@@ -347,19 +401,93 @@ export function importFromDir(
       continue;
     }
     const restrictedRaw = fm["restricted"];
+    if (restrictedRaw !== undefined && typeof restrictedRaw !== "boolean") {
+      skipped.push({
+        file,
+        reason: `invalid restricted ${JSON.stringify(restrictedRaw)} (expected boolean)`,
+      });
+      continue;
+    }
     const restricted = restrictedRaw === true;
     if (restricted && !opts.includeRestricted) {
       skipped.push({ file, reason: "restricted (use --include-restricted to import)" });
       continue;
     }
     const confidenceRaw = fm["confidence"];
-    const confidence =
-      typeof confidenceRaw === "string" &&
-      ALLOWED_CONFIDENCE.has(confidenceRaw as LoreConfidence)
-        ? (confidenceRaw as LoreConfidence)
-        : undefined;
+    if (
+      confidenceRaw !== undefined &&
+      (typeof confidenceRaw !== "string" ||
+        !ALLOWED_CONFIDENCE.has(confidenceRaw as LoreConfidence))
+    ) {
+      skipped.push({
+        file,
+        reason: `invalid confidence ${JSON.stringify(confidenceRaw)} (expected low|medium|high)`,
+      });
+      continue;
+    }
+    const confidence = confidenceRaw as LoreConfidence | undefined;
+    const supersededByRaw = fm["supersededBy"];
+    if (
+      supersededByRaw !== undefined &&
+      (typeof supersededByRaw !== "string" || !LORE_ID_RE.test(supersededByRaw))
+    ) {
+      skipped.push({
+        file,
+        reason: `invalid supersededBy ${JSON.stringify(supersededByRaw)} (expected 8 chars from [a-z2-9])`,
+      });
+      continue;
+    }
     const repos = fm["repos"];
+    if (repos !== undefined && !isStringArray(repos)) {
+      skipped.push({ file, reason: "invalid repos (expected list of strings)" });
+      continue;
+    }
     const tags = fm["tags"];
+    if (tags !== undefined && !isStringArray(tags)) {
+      skipped.push({ file, reason: "invalid tags (expected list of strings)" });
+      continue;
+    }
+    const tsCheck = checkTimestamp(fm, "createdAt") ??
+      checkTimestamp(fm, "updatedAt") ??
+      checkTimestamp(fm, "lastVerifiedAt") ??
+      checkTimestamp(fm, "reviewAfter");
+    if (tsCheck) {
+      skipped.push({ file, reason: tsCheck });
+      continue;
+    }
+
+    // Safe-import: skip only when the local record is strictly newer
+    // than the incoming file. Equal timestamps fall through and re-upsert
+    // — that keeps idempotent re-imports working and matches the user's
+    // spec ("if incoming.updatedAt < existing.updatedAt: skip"). When
+    // the incoming file omits updatedAt we have no clock to compare, so
+    // we let it proceed; that matches the pre-safe-import behaviour for
+    // a hand-authored file and is unsurprising.
+    if (!opts.force) {
+      const incomingUpdatedAt =
+        typeof fm["updatedAt"] === "string" ? (fm["updatedAt"] as string) : undefined;
+      const localUpdatedAt = db
+        .prepare("SELECT updated_at FROM lore WHERE id = ?")
+        .get(id) as { updated_at: string } | undefined;
+      if (
+        localUpdatedAt &&
+        incomingUpdatedAt &&
+        localUpdatedAt.updated_at > incomingUpdatedAt
+      ) {
+        skippedNewer++;
+        continue;
+      }
+    }
+
+    if (opts.dryRun) {
+      const exists = db
+        .prepare("SELECT 1 FROM lore WHERE id = ?")
+        .get(id) as unknown;
+      if (exists) updated++;
+      else created++;
+      continue;
+    }
+
     const result = upsertLoreFromImport(db, {
       id,
       title,
@@ -374,13 +502,10 @@ export function importFromDir(
           ? (fm["reviewAfter"] as string)
           : undefined,
       confidence,
-      repos: Array.isArray(repos) ? (repos as string[]) : undefined,
-      tags: Array.isArray(tags) ? (tags as string[]) : undefined,
+      repos: repos as string[] | undefined,
+      tags: tags as string[] | undefined,
       restricted,
-      supersededBy:
-        typeof fm["supersededBy"] === "string"
-          ? (fm["supersededBy"] as string)
-          : undefined,
+      supersededBy: supersededByRaw as string | undefined,
       createdAt:
         typeof fm["createdAt"] === "string"
           ? (fm["createdAt"] as string)
@@ -397,5 +522,21 @@ export function importFromDir(
     if (result.created) created++;
     else updated++;
   }
-  return { created, updated, skipped };
+  return { created, updated, skippedNewer, skipped, dryRun: !!opts.dryRun };
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+function checkTimestamp(
+  fm: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const v = fm[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "string" || Number.isNaN(Date.parse(v))) {
+    return `invalid ${key} ${JSON.stringify(v)} (expected an ISO-8601 date string)`;
+  }
+  return undefined;
 }
