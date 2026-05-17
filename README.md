@@ -430,13 +430,14 @@ claude mcp add loreguard node /absolute/path/to/loreguard-mcp/dist/bin/loreguard
 (Substitute your actual clone path. `claude mcp list` will show the
 result.)
 
-Claude sees three tools:
+Claude sees four tools:
 
 - `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
 - `get_lore({ id })` — full body of one record
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Over-cap inputs return a structured `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` so the agent can shorten and retry without a human round-trip.
+- `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. Restricted existing records are env-gated (`LOREGUARD_ALLOW_RESTRICTED_MCP=1`) the same way as `get_lore`.
 
-The MCP surface is intentionally narrow. Agents can read and suggest;
+The MCP surface is intentionally narrow. Agents can read, suggest, and challenge;
 **approval, deprecation, and supersession are CLI-only**.
 
 ## Tell your agent when to use lore
