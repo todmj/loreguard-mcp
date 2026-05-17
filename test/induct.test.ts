@@ -165,13 +165,13 @@ describe("cli/induct", () => {
     expect(full.body).toContain("(induction session, 2026-05-16)");
   });
 
-  it("truncates summary at ~500 chars while keeping the body intact", () => {
-    const long = "A".repeat(800);
+  it("truncates summary at ~800 chars while keeping the body intact", () => {
+    const long = "A".repeat(1200);
     const { created } = runInduct(db, {
       answers: [{ questionKey: "invariants", answer: long }],
     });
     const full = getLore(db, created[0]!.id)!;
-    expect(full.summary.length).toBeLessThanOrEqual(500);
+    expect(full.summary.length).toBeLessThanOrEqual(800);
     expect(full.body.startsWith(long)).toBe(true);
   });
 
