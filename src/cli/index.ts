@@ -51,7 +51,7 @@ import {
   findBundledSkillPath,
   skillDestPath,
 } from "./setup.js";
-import { exportToDir, importFromDir } from "./sync.js";
+import { exportToDir, findLoreguardDirs, importFromDir } from "./sync.js";
 
 const HELP = `loreguard — reviewed project memory for AI coding agents
 
@@ -120,6 +120,13 @@ COMMANDS
                             skipped unless --include-restricted is set.
                             Imports respect the file's declared status
                             (the PR is the review gate).
+  sync pull <parent>        Recursively discover every .loreguard/
+                            directory under <parent> and import each.
+                            One command bootstraps a fresh machine
+                            across every repo in your workspace tree.
+                            Same flags as \`sync import\`. Skips heavy
+                            directories (node_modules, .git, dist,
+                            build, target, vendor, etc.).
   audit [--n=N] [--raw]     Print the last N audit log lines (default 20)
                             in a redacted human-readable form. Use --raw
                             to see the full JSON instead.
@@ -721,12 +728,103 @@ async function cmdRepos(): Promise<number> {
   }
 }
 
+/**
+ * `loreguard sync pull <parent>` — recursively discover every
+ * `.loreguard/` directory under `<parent>` and run `importFromDir`
+ * on each one. The "one machine, all my repos" cross-repo win: a
+ * developer who works in ~/code with N repos that each ship a
+ * `.loreguard/` runs this once and their local DB is populated
+ * with everything those teams have committed.
+ *
+ * Bounded scan: skips common heavy directories (`node_modules`,
+ * `.git`, `dist`, `build`, `target`, `vendor`, `.next`, `.cache`)
+ * to avoid eating the filesystem. Doesn't descend into a discovered
+ * `.loreguard/` itself (its contents are the records, not nested
+ * caches).
+ */
+async function cmdSyncPull(
+  args: ReturnType<typeof parseArgs>,
+  parentDir: string,
+): Promise<number> {
+  const { resolve } = await import("node:path");
+  const absParent = resolve(parentDir);
+  if (!existsSync(absParent)) {
+    process.stderr.write(
+      `loreguard: sync pull — parent directory not found: ${absParent}\n`,
+    );
+    return 2;
+  }
+  const found = findLoreguardDirs(absParent);
+  if (found.length === 0) {
+    process.stdout.write(
+      `loreguard: sync pull — no .loreguard/ directories found under ${absParent}\n`,
+    );
+    return 0;
+  }
+  const includeRestricted = getBool(args.flags, "include-restricted");
+  const force = getBool(args.flags, "force");
+  const dryRun = getBool(args.flags, "dry-run");
+  const db = openDb();
+  let totalCreated = 0;
+  let totalUpdated = 0;
+  let totalSkippedNewer = 0;
+  let totalRejected = 0;
+  let totalDangling = 0;
+  try {
+    process.stdout.write(
+      `loreguard: sync pull — found ${found.length} .loreguard/ ${found.length === 1 ? "directory" : "directories"} under ${absParent}\n`,
+    );
+    for (const d of found) {
+      const r = importFromDir(db, d, { includeRestricted, force, dryRun });
+      totalCreated += r.created;
+      totalUpdated += r.updated;
+      totalSkippedNewer += r.skippedNewer;
+      totalRejected += r.skipped.length;
+      totalDangling += r.danglingSupersededBy.length;
+      const verb = r.dryRun ? "would import" : "imported";
+      process.stdout.write(
+        `  ${d}: ${verb} ${r.created} new + ${r.updated} updated` +
+          (r.skippedNewer > 0
+            ? `, skipped ${r.skippedNewer} (local newer)`
+            : "") +
+          (r.skipped.length > 0
+            ? `, rejected ${r.skipped.length}`
+            : "") +
+          "\n",
+      );
+      if (r.danglingSupersededBy.length > 0) {
+        for (const dd of r.danglingSupersededBy) {
+          process.stderr.write(
+            `    WARNING dangling supersededBy: ${dd.file} ${dd.id} → ${dd.supersededBy}\n`,
+          );
+        }
+      }
+    }
+    const verb = dryRun ? "would import" : "imported";
+    process.stdout.write(
+      `\nloreguard: ${verb} ${totalCreated} new + ${totalUpdated} updated across ${found.length} ${found.length === 1 ? "directory" : "directories"}` +
+        (totalSkippedNewer > 0
+          ? `; ${totalSkippedNewer} skipped as newer locally`
+          : "") +
+        (totalRejected > 0 ? `; ${totalRejected} rejected` : "") +
+        (totalDangling > 0
+          ? `; ${totalDangling} dangling supersededBy refs (see warnings)`
+          : "") +
+        (dryRun ? " (dry-run — no changes written)" : "") +
+        "\n",
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
   const sub = args.positionals[0];
   const dir = args.positionals[1];
-  if (sub !== "export" && sub !== "import") {
+  if (sub !== "export" && sub !== "import" && sub !== "pull") {
     process.stderr.write(
-      "loreguard: sync requires a subcommand — `loreguard sync export <dir>` or `loreguard sync import <dir>`\n",
+      "loreguard: sync requires a subcommand — `loreguard sync export <dir>`, `loreguard sync import <dir>`, or `loreguard sync pull <parent-dir>`\n",
     );
     return 2;
   }
@@ -738,6 +836,9 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
   const includeDeprecated = getBool(args.flags, "include-deprecated");
   const includeSuperseded = getBool(args.flags, "include-superseded");
   const includeRestricted = getBool(args.flags, "include-restricted");
+  if (sub === "pull") {
+    return await cmdSyncPull(args, dir);
+  }
   const db = openDb();
   try {
     if (sub === "export") {

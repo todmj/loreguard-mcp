@@ -602,6 +602,71 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
 
+// ── Recursive cross-repo discovery (`sync pull`) ──────────────────────
+
+export const SYNC_PULL_SKIP_DIRS: ReadonlySet<string> = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "target",
+  "vendor",
+  ".next",
+  ".cache",
+  ".turbo",
+  "out",
+  ".pnpm-store",
+]);
+
+/**
+ * Walk `root` recursively, return absolute paths of every `.loreguard/`
+ * directory found. Skips common heavy directories (see
+ * SYNC_PULL_SKIP_DIRS) to bound the scan. Doesn't descend INTO a
+ * discovered `.loreguard/` (its contents are records, not nested
+ * caches).
+ *
+ * Heuristic gate: only counts a `.loreguard/` directory if it
+ * contains at least one `<id>.md` file matching the lore-id shape.
+ * Avoids false positives from unrelated tool caches that happen to
+ * use the name.
+ *
+ * Sorts the returned list so the import order is stable across runs.
+ */
+export function findLoreguardDirs(root: string): string[] {
+  const found: string[] = [];
+  function walk(dir: string): void {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (SYNC_PULL_SKIP_DIRS.has(entry.name)) continue;
+      const full = join(dir, entry.name);
+      if (entry.name === ".loreguard") {
+        try {
+          const md = readdirSync(full).some((f) => LORE_ID_FILE_RE.test(f));
+          if (md) found.push(full);
+        } catch {
+          // unreadable — skip
+        }
+        continue; // never descend into .loreguard itself
+      }
+      // Skip other hidden directories — they're either tool caches
+      // (.cache, .next) or repo metadata (.git, .github). The
+      // SYNC_PULL_SKIP_DIRS check above catches the known heavy
+      // ones explicitly; anything else starting with "." we skip
+      // conservatively.
+      if (entry.name.startsWith(".")) continue;
+      walk(full);
+    }
+  }
+  walk(root);
+  return found.sort();
+}
+
 function checkTimestamp(
   fm: Record<string, unknown>,
   key: string,
