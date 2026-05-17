@@ -240,36 +240,71 @@ want the agent to do the repo-reading work for you.
 
 #### Bulk-import alternative — `loreguard ingest-md`
 
-If you **already have** the knowledge written down (CLAUDE.md
-sections, ADR files, MIGRATION notes, incident postmortems),
-`induct`/`/loreguard-onboard` are the wrong shape — they ask
-questions you've already answered. `loreguard ingest-md` walks a
-glob, splits each file by H3 subsections or top-level bullets, and
-creates one DRAFT per candidate. Same `loreguard review` queue
-gates everything before it becomes canonical.
+> **Caveat: only for clean knowledge docs.** Real-world dogfood
+> showed that pointing this at a typical `docs/` directory produces
+> 80%+ noise — status trackers, roadmaps, UI specs, and TOC bullets
+> all become DRAFT records, the review queue balloons past what any
+> human will read, and the trust gate degrades into "approve all."
+> The defaults below are tuned to reject that noise hard. If you
+> have a *messy* repo (plans / progress trackers mixed with real
+> conventions), use the **`/loreguard-onboard` skill** instead — it
+> reads files with agent judgement rather than chunking everything.
+
+If you **already have** clean knowledge written down (ADRs,
+SECURITY.md as a real policy doc, MIGRATION notes, INTEGRATION
+guides) and want to avoid the induct interview's per-question pace,
+`loreguard ingest-md` walks a glob, applies two filters, and creates
+DRAFT records for what survives. Same `loreguard review` queue gates
+everything before promotion.
 
 ```bash
+# Always start with --dry-run to see what survives the filters.
+loreguard ingest-md ./docs/*.md --dry-run
+
+# Then run for real once you trust the output.
 loreguard ingest-md ./CLAUDE.md --section "Things That Catch People Out"
 loreguard ingest-md ./docs/adrs/*.md --tag decisions
-loreguard ingest-md ./docs/*.md --source https://github.com/org/repo --dry-run
+loreguard ingest-md ./docs/*.md --source https://github.com/org/repo
 ```
 
-Flags:
+**Filter 1: filename deny-list (hard skip).** Files whose name
+contains any of `plan`, `roadmap`, `progress`, `todo`, `backlog`,
+`spec`, `usability`, `status`, `execution` are skipped entirely.
+These shapes are intent / status documents, not durable team
+knowledge — they decay fast and pollute FTS with terms agents
+shouldn't retrieve. Override with `--include-intent-files` when you
+genuinely mean to ingest them.
+
+**Filter 2: content-shape scoring (per chunk).** Each candidate gets
+scored:
+
+- **+1** per imperative marker (`must`, `should`, `always`, `never`, `do not`, `prefer`, `avoid`, `required`)
+- **+1** per durable-fact marker (`is not` / `are not` / `does not`, `requires` / `require`, `rejects`, `uses`, `stores`, `depends on`, `cannot`, `scoped to`, `contains`, etc.)
+- **−1** if body is < 200 chars (short factual lore can still pass on positive markers)
+- **−1** per future-tense / planning marker (`will`, `plan to`, `planned:`, `target:`, `todo`, `wip`)
+
+Hard-rejected regardless of score:
+
+- `title === summary === body` (collapsed single-line bullet)
+- title contains a date stamp like `(2026-03-24)` (status heading)
+
+Candidates pass at `score >= 0`. The conservative shape means
+concise descriptive lore like *"Customer IDs are tenant-scoped"*
+passes (fact marker), while a UI spec bullet like *"Cards: Suppliers
+Connected: 3/4"* fails (short + no markers).
+
+**Other flags:**
 
 - `--section "Heading Text"` — scope to one heading (case-insensitive substring match); content from that heading until the next same-or-higher-level heading
 - `--tag <name>` — extra tag on every drafted record (repeatable; always layered on top of `imported` and `imported-from:<file-basename>`)
 - `--repo <name>` — repo scope (repeatable; falls back to the auto-detected name if omitted)
 - `--source <url>` — base source URL; if it's a GitHub blob URL, the per-record source becomes `<base>#L<sourceLine>` so the reviewer can jump straight to the right line
-- `--dry-run` — print what would be drafted; insert nothing
-
-Splitting is intentionally simple — H3 or bullets, whichever appears
-first in the file. Anything richer (tables, nested formatting, YAML
-frontmatter) is out of scope; hand-edit during review if it matters.
-Items shorter than 30 characters are skipped as noise.
+- `--dry-run` — print every accept/reject with reasons + summary counters; insert nothing
 
 The three cold-start paths aren't mutually exclusive — many teams do
-`ingest-md` to seed bulk material then `induct` (or
-`/loreguard-onboard`) for the things that *aren't* written down yet.
+`ingest-md` on their ADR/policy files for the dense knowledge, then
+`induct` or `/loreguard-onboard` for the things that *aren't*
+written down yet.
 
 ### Step 2 — `loreguard review` (triage drafts)
 

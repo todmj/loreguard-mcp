@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveItemSource,
+  intentFilenameDenied,
   parseMarkdownItems,
+  scoreCandidate,
 } from "../src/cli/ingest.js";
 import { listDrafts, suggestLore } from "../src/core/lore.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -161,5 +163,157 @@ Second candidate body, also plenty long.
       expect(d.status).toBe("draft");
       expect(d.tags).toContain("imported");
     }
+  });
+});
+
+describe("intentFilenameDenied — filename deny-list (derived from real betbridge data)", () => {
+  it("matches plan / status / spec / roadmap files (the 80% noise sources)", () => {
+    const denied = [
+      "BUILD_PROGRESS.md",
+      "build_progress.md",
+      "PRIORITY_PLAN.md",
+      "DEPLOYMENT_EXECUTION_PLAN.md",
+      "E2E_USABILITY_PLAN.md",
+      "USABILITY_PLAN.md",
+      "ROADMAP.md",
+      "PRODUCT_SPEC.md",
+      "SPEC_DRIVEN_DESIGN.md",
+      "team_status_q3.md",
+      "backlog-2026.md",
+      "todo-this-week.md",
+    ];
+    for (const f of denied) {
+      expect(intentFilenameDenied(f)).not.toBeNull();
+    }
+  });
+
+  it("allows real knowledge-doc filenames (the 20% lore-worthy sources)", () => {
+    const allowed = [
+      "ARCHITECTURE.md",
+      "AUTHENTICATION.md",
+      "CONFIGURATION.md",
+      "INTEGRATION_GUIDE.md",
+      "OPERATIONS.md",
+      "SECRETS.md",
+      "SECURITY.md",
+      "HARDCODED_AUDIT.md", // "audit" not in deny-list — real audit report
+      "FULL_CONTEXT_DUMP.md", // "dump" too broad to deny on
+      "CLAUDE.md",
+      "ADR-014-password-hashing.md",
+      "MIGRATIONS.md",
+    ];
+    for (const f of allowed) {
+      expect(intentFilenameDenied(f)).toBeNull();
+    }
+  });
+});
+
+describe("scoreCandidate — content-shape filter", () => {
+  function candidate(
+    fields: Partial<{ title: string; summary: string; body: string }>,
+  ) {
+    return {
+      title: fields.title ?? "x",
+      summary: fields.summary ?? "x",
+      body: fields.body ?? "x",
+      sourceLine: 1,
+    };
+  }
+
+  it("hard-rejects collapsed title === summary === body bullets", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "A description of the vulnerability and the potential impact",
+        summary: "A description of the vulnerability and the potential impact",
+        body: "A description of the vulnerability and the potential impact",
+      }),
+    );
+    expect(r.pass).toBe(false);
+    expect(r.reasons[0]).toMatch(/collapsed/);
+  });
+
+  it("hard-rejects date-stamped status headings", () => {
+    expect(
+      scoreCandidate(
+        candidate({
+          title: "Integration Tests — Testcontainers (2026-03-24)",
+          body: "Some long body with imperatives like must and should that would otherwise pass scoring easily because of the markers.",
+        }),
+      ).pass,
+    ).toBe(false);
+    expect(
+      scoreCandidate(
+        candidate({
+          title: "7. Configurable Outbound Template (In Progress — 2026-03-21)",
+          body: "x".repeat(300),
+        }),
+      ).pass,
+    ).toBe(false);
+  });
+
+  it("passes real lore with an imperative (must / should / etc.)", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "Use Argon2id for password hashing",
+        summary: "We must use Argon2id with m=64MB, t=3, p=4.",
+        body: "All services should use the shared crypto package. Do not roll your own. INC-411 was caused by a bcrypt 72-byte truncation bug.",
+      }),
+    );
+    expect(r.pass).toBe(true);
+    expect(r.score).toBeGreaterThan(0);
+  });
+
+  it("passes short-but-durable facts via fact markers ('Customer IDs are tenant-scoped')", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "Customer IDs are tenant-scoped",
+        summary: "Customer IDs are scoped to a single tenant.",
+        body: "Customer IDs are scoped to a single tenant; cross-tenant lookups are not supported. The resolver rejects any query that crosses the boundary.",
+      }),
+    );
+    expect(r.pass).toBe(true);
+    expect(r.reasons.some((rr) => rr.includes("fact marker"))).toBe(true);
+  });
+
+  it("rejects UI spec bullets with no rule/fact markers and a short body", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "Cards: Suppliers Connected: 3/4 | Events Today: 127",
+        summary: "Cards laid out in a grid",
+        body: "Cards laid out in a grid, one per supplier, with metrics.",
+      }),
+    );
+    expect(r.pass).toBe(false);
+  });
+
+  it("penalises future-tense markers (planned: / plan to / target: / will / todo)", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "Multi-cloud abstractions",
+        body: "Planned: support multiple managed services. Target: Q3 next year. We will deliver this when the second customer arrives.",
+      }),
+    );
+    expect(r.pass).toBe(false);
+    expect(r.reasons.some((rr) => rr.includes("future-tense"))).toBe(true);
+  });
+
+  it("does NOT match a marker inside a longer word ('must' inside 'mustard')", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "Lunch options",
+        body: "The kitchen has mustard, ketchup, and mayo. ".repeat(8),
+      }),
+    );
+    expect(r.reasons.every((rr) => !rr.includes("imperative"))).toBe(true);
+  });
+
+  it("caps imperative scoring so spam can't game the threshold", () => {
+    const r = scoreCandidate(
+      candidate({
+        title: "Test",
+        body: "must must must must must must " + "long body ".repeat(30),
+      }),
+    );
+    expect(r.score).toBeLessThanOrEqual(2);
   });
 });
