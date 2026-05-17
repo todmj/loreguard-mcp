@@ -87,15 +87,24 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     },
   },
   {
-    // External reviewer flagged the 001/003 gap as a release-hygiene
-    // smell — public installs shouldn't ship with a missing migration
-    // id. Sibling branch `feature/conflict-records` uses 002; whichever
-    // lands second will need a renumber + rebase. Migration order is
-    // array-order with idempotency by id.
-    id: "002-absence-markers",
+    id: "002-conflicts-with",
+    up(db) {
+      // R3+ — team-ratified disagreement primitive. `report_conflict`
+      // creates a DRAFT counter-record whose `conflicts_with` column
+      // points back at the canonical record being challenged. JSON-
+      // encoded id array (or NULL). Decoded into `Lore.conflictsWith`
+      // by rowToLore. Migration is append-only; existing rows stay
+      // NULL (existing semantics unchanged). See ADR-003.
+      db.exec(`
+        ALTER TABLE lore ADD COLUMN conflicts_with TEXT;
+      `);
+    },
+  },
+  {
+    id: "003-absence-markers",
     up(db) {
       // Verified-absence: record "we checked, the team has no policy
-      // on this — don't re-search for 30 days". When search_lore
+      // on this — don't re-search for N days". When search_lore
       // returns zero hits AND a matching marker is active, the
       // response includes the marker so the next agent knows it's an
       // acknowledged gap, not an oversight. Low-stakes, no review

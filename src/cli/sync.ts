@@ -154,6 +154,10 @@ export function renderLoreMarkdown(lore: Lore): string {
     lines.push("tags:");
     for (const t of lore.tags) lines.push(`  - ${t}`);
   }
+  if (lore.conflictsWith && lore.conflictsWith.length > 0) {
+    lines.push("conflictsWith:");
+    for (const id of lore.conflictsWith) lines.push(`  - ${id}`);
+  }
   lines.push("---");
   lines.push("");
   lines.push(lore.body);
@@ -475,6 +479,24 @@ export function importFromDir(
       skipped.push({ file, reason: "invalid tags (expected list of strings)" });
       continue;
     }
+    const conflictsWith = fm["conflictsWith"];
+    if (conflictsWith !== undefined && !isStringArray(conflictsWith)) {
+      skipped.push({
+        file,
+        reason: "invalid conflictsWith (expected list of lore ids)",
+      });
+      continue;
+    }
+    if (
+      isStringArray(conflictsWith) &&
+      !conflictsWith.every((cid) => LORE_ID_RE.test(cid))
+    ) {
+      skipped.push({
+        file,
+        reason: "invalid conflictsWith id (each must be 8 chars from [a-z2-9])",
+      });
+      continue;
+    }
     const tsCheck = checkTimestamp(fm, "createdAt") ??
       checkTimestamp(fm, "updatedAt") ??
       checkTimestamp(fm, "lastVerifiedAt") ??
@@ -534,6 +556,7 @@ export function importFromDir(
       tags: tags as string[] | undefined,
       restricted,
       supersededBy: supersededByRaw as string | undefined,
+      conflictsWith: conflictsWith as string[] | undefined,
       createdAt:
         typeof fm["createdAt"] === "string"
           ? (fm["createdAt"] as string)

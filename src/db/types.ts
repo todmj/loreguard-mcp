@@ -30,6 +30,12 @@ export interface LoreRow {
   readonly created_at: string;
   readonly updated_at: string;
   readonly last_verified_at: string | null;
+  /**
+   * JSON-encoded array of lore ids that this record explicitly
+   * challenges (counter-claim). NULL on every record that isn't a
+   * counter-record — never the empty array `"[]"`. See ADR-003.
+   */
+  readonly conflicts_with: string | null;
 }
 
 /**
@@ -55,6 +61,15 @@ export interface Lore {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly lastVerifiedAt?: string;
+  /**
+   * Explicit team-ratified disagreement: ids of canonical records this
+   * record challenges. Populated only on counter-records created via
+   * `reportConflict`; `undefined` on every other record (NOT `[]` — the
+   * absence is the meaningful state). Distinct from the runtime
+   * `possibleConflicts` heuristic on LoreSummary, which is shared-scope
+   * overlap detection. See ADR-003.
+   */
+  readonly conflictsWith?: ReadonlyArray<string>;
 }
 
 /**
@@ -94,6 +109,13 @@ export interface LoreSummary {
    * to the current response. Empty / omitted when nothing qualifies.
    */
   readonly possibleConflicts?: ReadonlyArray<string>;
+  /**
+   * Same `conflictsWith` semantics as on `Lore` — explicit counter-claim
+   * link from `reportConflict`. Surfaced in search so the agent (and
+   * the CLI renderer) can flag counter-records without a separate
+   * round trip. `undefined` on non-counter records.
+   */
+  readonly conflictsWith?: ReadonlyArray<string>;
 }
 
 export interface SearchOptions {

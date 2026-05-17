@@ -7,6 +7,8 @@ import { findActiveAbsence, recordAbsence } from "../core/absence.js";
 import {
   findPossibleDuplicates,
   getLore,
+  reportConflict,
+  ReportConflictError,
   searchLore,
   suggestLore,
 } from "../core/lore.js";
@@ -487,6 +489,163 @@ export async function runMcpServer(): Promise<void> {
     },
   );
 
+  // ---- report_conflict -------------------------------------------------
+  server.registerTool(
+    "report_conflict",
+    {
+      title: "Report a conflict against a canonical lore record",
+      description:
+        "Use when you've found code (or another authoritative source) " +
+        "that contradicts an existing ACTIVE lore record. Creates a DRAFT " +
+        "counter-record linked back to the original via `conflictsWith` — " +
+        "it lands in `loreguard review` for the human to triage. The " +
+        "original record is NEVER mutated; the link is one-way. Resolution " +
+        "is the reviewer's call (approve the counter-claim → use " +
+        "`loreguard supersede` or `loreguard update` to fix the original; " +
+        "reject → the original stands).\n\n" +
+        "Distinct from the runtime `possibleConflicts` heuristic on search " +
+        "results — that's shared-scope overlap detection. This is explicit, " +
+        "persisted, agent-flagged disagreement.",
+      inputSchema: {
+        existingId: z
+          .string()
+          .min(1)
+          .describe(
+            "The 8-char id of the existing ACTIVE record being challenged. " +
+              "Get this from a prior `search_lore` or `get_lore` call.",
+          ),
+        observation: z
+          .string()
+          .min(1)
+          .max(800)
+          .describe(
+            "What did you observe that contradicts the existing record? " +
+              "Stand-alone explanation — the reviewer reads this without " +
+              "additional context. ≤ 800 chars (mirrors suggest_lore.summary).",
+          ),
+        source: z
+          .string()
+          .url()
+          .optional()
+          .describe(
+            "URL pointing at the contradicting evidence (commit, PR, " +
+              "code permalink). Counter-claims with a source are higher-trust.",
+          ),
+        repos: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Repos this counter-claim is scoped to. Inherits from the " +
+              "challenged record if omitted (handled by the reviewer).",
+          ),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Extra tags. 'conflict-report' is always added automatically.",
+          ),
+      },
+    },
+    async (args) => {
+      // Audit shape mirrors suggest_lore: never record the observation
+      // body, just its length, so the audit log can be grepped for
+      // "agent X repeatedly challenges record Y" without leaking content.
+      const sanitised: Record<string, unknown> = {
+        existingId: args.existingId,
+        observationChars: args.observation.length,
+        source: args.source,
+        repos: args.repos,
+        tags: args.tags,
+      };
+      try {
+        // Defence in depth — the core reportConflict also refuses
+        // restricted, but the MCP gate is the env-gated boundary the
+        // user explicitly configured. A restricted refusal returns the
+        // same shape as get_lore so the audit + response surface stays
+        // consistent. (Distinguishable from "unknown id" — same oracle
+        // shape as today's get_lore.)
+        const existing = getLore(db, args.existingId);
+        if (
+          existing &&
+          existing.restricted &&
+          process.env["LOREGUARD_ALLOW_RESTRICTED_MCP"] !== "1"
+        ) {
+          audit({
+            tool: "report_conflict",
+            request: sanitised,
+            blocked: "restricted",
+          });
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    error: "restricted",
+                    hint: "Set LOREGUARD_ALLOW_RESTRICTED_MCP=1 to allow MCP access to restricted lore.",
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        const draft = reportConflict(db, {
+          existingId: args.existingId,
+          observation: args.observation,
+          source: args.source,
+          repos: args.repos,
+          tags: args.tags,
+        });
+        audit({
+          tool: "report_conflict",
+          request: sanitised,
+          resultCount: 1,
+          resultIds: [draft.id],
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  id: draft.id,
+                  status: draft.status,
+                  conflictsWith: draft.conflictsWith ?? [],
+                  message:
+                    "Counter-draft created. A human will review with `loreguard review` and " +
+                    "either approve / reject / edit / supersede the original.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        const reason =
+          err instanceof ReportConflictError ? err.reason : "internal_error";
+        const msg = err instanceof Error ? err.message : String(err);
+        audit({
+          tool: "report_conflict",
+          request: sanitised,
+          error: `${reason}: ${msg}`,
+        });
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `report_conflict failed (${reason}): ${msg}`,
+            },
+          ],
+        };
+      }
+    },
+  );
+
   // ---- record_absence -------------------------------------------------
   server.registerTool(
     "record_absence",
@@ -593,6 +752,7 @@ export async function runMcpServer(): Promise<void> {
       }
     },
   );
+
 
   // Connect on stdio. The MCP client (Claude Code, Cursor, etc.) is the
   // parent process; we read JSON-RPC framed messages on stdin, reply on

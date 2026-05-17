@@ -238,13 +238,20 @@ queue catches both your induction drafts and any drafts agents
 suggest later via `suggest_lore` — single triage point, no separate
 "agent inbox" to babysit.
 
-For scripted use: `loreguard approve <id>` and `loreguard reject <id>`.
-For a quick non-interactive list: `loreguard review --list`.
+When you reject a draft, the interactive flow prompts for an optional
+**reason** (`Reason? (optional, blank to skip):`). The reason lands
+on the `rejected` event payload, so the agent that suggested it (or
+future-you reading the audit chain) can see *why* the draft was
+dropped instead of re-suggesting the same shape next session. Closes
+the feedback loop without adding a new lifecycle.
 
-> The `--reason "..."` flag on `reject` (so the agent that suggested
-> the draft can see *why* it was dropped) lives on the sibling
-> `feature/rejection-reason-capture` branch; available once that
-> branch merges to `main`.
+For scripted use:
+
+```bash
+loreguard approve <id>
+loreguard reject <id> --reason "wrong scope — convention is per-repo, not org-wide"
+loreguard review --list   # non-interactive overview
+```
 
 ### Step 3 — wire the agent
 
@@ -464,14 +471,13 @@ claude mcp add loreguard node /absolute/path/to/loreguard-mcp/dist/bin/loreguard
 (Substitute your actual clone path. `claude mcp list` will show the
 result.)
 
-Claude sees five tools (or four pre-Epic-3 merge — `report_conflict`
-lands with the conflict-records branch):
+Claude sees five tools:
 
 - `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
 - `get_lore({ id })` — full body of one record.
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits); `title` and `summary` are capped at 200 and 800 chars respectively. *A structured `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` response shape — so agents can paste `suggested_cut` back as a corrected retry without a human round-trip — lives on the sibling `feature/structured-validation-errors` branch and ships when it merges.*
-- `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. Restricted existing records are env-gated (`LOREGUARD_ALLOW_RESTRICTED_MCP=1`) the same way as `get_lore`.
-- `record_absence({ query, reason, repo?, expiresInDays? })` — agent searched, found nothing, AND has confirmed the gap is real and durable (not just a phrasing miss). Records a **self-expiring** marker (default 30 days; max 365) so the next `search_lore` on the same normalised query surfaces `absence_marker: { reason, ... }` instead of returning empty again. **Don't auto-call this on every zero-hit search** — only when the absence is itself the finding. No review gate (low-stakes, time-bounded — distinct from drafts). Markers are normalised order-independently and case-insensitively so `"payments-svc retry policy"` and `"Retry POLICY payments-svc"` share a marker. Repo-scoped markers shadow global ones when the search is also repo-scoped.
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Over-cap inputs (`title > 200`, `summary > 800`) return a **structured error** `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` instead of failing through zod's max-cap path — the agent can paste `suggested_cut` back as a corrected retry without a human round-trip. Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits).
+- `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. Restricted existing records are env-gated (`LOREGUARD_ALLOW_RESTRICTED_MCP=1`) the same way as `get_lore`. See [ADR-003](#) for the storage-shape rationale.
+- `record_absence({ query, reason, repo?, expiresInDays? })` — agent searched, found nothing, AND has confirmed the gap is real and durable (not just a phrasing miss). Records a **self-expiring** marker (default 14 days; max 365) so the next `search_lore` on the same normalised query surfaces `absence_marker: { reason, ... }` instead of returning empty again. **Don't auto-call this on every zero-hit search** — only when the absence is itself the finding. No review gate (low-stakes, time-bounded — distinct from drafts). Markers are normalised order-independently and case-insensitively so `"payments-svc retry policy"` and `"Retry POLICY payments-svc"` share a marker. Repo-scoped markers shadow global ones when the search is also repo-scoped.
 
 The MCP surface is intentionally narrow. Agents can read, suggest,
 challenge, and flag known gaps; **approval, deprecation, and
