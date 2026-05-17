@@ -351,6 +351,40 @@ describe("core/lore", () => {
     });
   });
 
+  describe("searchLore — public-API input validation", () => {
+    it("default limit is 10 when omitted", () => {
+      for (let i = 0; i < 15; i++) {
+        addLore(db, { title: `record ${i}`, summary: "s", body: "b" });
+      }
+      const hits = searchLore(db, {});
+      expect(hits.length).toBeLessThanOrEqual(10);
+    });
+
+    it("accepts integer limit in [1, 50]", () => {
+      addLore(db, { title: "one", summary: "s", body: "b" });
+      expect(searchLore(db, { limit: 1 })).toHaveLength(1);
+      expect(searchLore(db, { limit: 50 })).toHaveLength(1);
+    });
+
+    it("rejects non-integer / out-of-range / NaN limit with a typed error", () => {
+      const bad = [0, -1, 1.5, 51, 100, Number.NaN, Infinity, -Infinity];
+      for (const v of bad) {
+        expect(() => searchLore(db, { limit: v })).toThrow(/limit must be/);
+      }
+    });
+
+    it("rejects invalid updatedAfter (catches embedder errors at the boundary)", () => {
+      expect(() => searchLore(db, { updatedAfter: "yesterday" })).toThrow(
+        /updatedAfter.*not a valid ISO/,
+      );
+      // Valid ISO shapes still pass.
+      expect(() =>
+        searchLore(db, { updatedAfter: "2026-01-01T00:00:00.000Z" }),
+      ).not.toThrow();
+      expect(() => searchLore(db, { updatedAfter: "2026-01-01" })).not.toThrow();
+    });
+  });
+
   describe("searchLore — token-saving contract", () => {
     beforeEach(() => {
       addLore(db, {
@@ -457,12 +491,11 @@ describe("core/lore", () => {
       expect(billing[0]!.repos).toContain("billing-svc");
     });
 
-    it("limit clamps at 50", () => {
+    it("limit > 50 throws (was: silent clamp; reviewer asked for fail-fast on the public API)", () => {
       for (let i = 0; i < 60; i++) {
         addLore(db, { title: `entry-${i}`, summary: "s", body: "b" });
       }
-      const hits = searchLore(db, { limit: 100 });
-      expect(hits.length).toBeLessThanOrEqual(50);
+      expect(() => searchLore(db, { limit: 100 })).toThrow(/limit must be/);
     });
   });
 

@@ -45,6 +45,27 @@ function assertIsoDate(value: string | undefined, field: string): void {
 }
 
 /**
+ * Search-limit validator for the public library API. Returns the
+ * default (10) when undefined; throws on NaN / non-integer / out of
+ * the [1, 50] range. The MCP zod schema and the CLI flag parser both
+ * gate this upstream, but `searchLore` is exported so an embedder
+ * could call it directly — better to fail fast with a typed message
+ * than pass garbage to better-sqlite3 and watch it bind NaN into a
+ * LIMIT clause and surface a "datatype mismatch" deep in native code.
+ */
+const SEARCH_LIMIT_DEFAULT = 10;
+const SEARCH_LIMIT_MAX = 50;
+function normaliseLimit(v: number | undefined): number {
+  if (v === undefined) return SEARCH_LIMIT_DEFAULT;
+  if (!Number.isInteger(v) || v < 1 || v > SEARCH_LIMIT_MAX) {
+    throw new Error(
+      `limit must be an integer between 1 and ${SEARCH_LIMIT_MAX} (got ${JSON.stringify(v)})`,
+    );
+  }
+  return v;
+}
+
+/**
  * `source` must be a real http(s) URL. The README is explicit about
  * this — sources are PR / ADR / incident permalinks, not free-text
  * shorthand. Keeps the trust signal honest (a real URL can be checked).
@@ -1075,7 +1096,16 @@ export function searchLore(
   db: Database,
   opts: SearchOptions = {},
 ): LoreSummary[] {
-  const limit = Math.min(opts.limit ?? 10, 50);
+  // Public-API hardening — CLI and MCP both validate before we get
+  // here, but the library entry point is also exported (see src/index.ts)
+  // so an embedder calling searchLore directly could otherwise pass
+  // NaN / -1 / 1e100 / "not a number". better-sqlite3 binds the value
+  // into the LIMIT clause and you get a confusing "datatype mismatch"
+  // deep in native code. Surface a clear error at the boundary.
+  const limit = normaliseLimit(opts.limit);
+  if (opts.updatedAfter !== undefined) {
+    assertIsoDate(opts.updatedAfter, "updatedAfter");
+  }
   const allowedStatuses: LoreStatus[] = ["active"];
   if (opts.includeDrafts) allowedStatuses.push("draft");
   if (opts.includeDeprecated) allowedStatuses.push("deprecated");
