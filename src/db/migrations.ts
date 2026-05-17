@@ -86,6 +86,20 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    id: "002-conflicts-with",
+    up(db) {
+      // R3+ — team-ratified disagreement primitive. `report_conflict`
+      // creates a DRAFT counter-record whose `conflicts_with` column
+      // points back at the canonical record being challenged. JSON-
+      // encoded id array (or NULL). Decoded into `Lore.conflictsWith`
+      // by rowToLore. Migration is append-only; existing rows stay
+      // NULL (existing semantics unchanged). See ADR-003.
+      db.exec(`
+        ALTER TABLE lore ADD COLUMN conflicts_with TEXT;
+      `);
+    },
+  },
 ];
 
 /**

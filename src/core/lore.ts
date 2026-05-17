@@ -91,7 +91,43 @@ function rowToLore(row: LoreRow, repos: string[], tags: string[]): Lore {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastVerifiedAt: row.last_verified_at ?? undefined,
+    conflictsWith: parseConflictsWith(row.conflicts_with),
   };
+}
+
+/**
+ * Decode the `conflicts_with` storage column into the public
+ * `Lore.conflictsWith` shape. Storage is one of:
+ *
+ *   - `NULL` → `undefined` (the record isn't a counter-record)
+ *   - JSON-encoded `string[]` with at least one id → frozen
+ *     `ReadonlyArray<string>` of those ids
+ *
+ * The empty array `"[]"` is not a representable on-disk state — callers
+ * either store NULL (no conflict) or a non-empty array. A defensive
+ * `[]` payload (e.g. from a hand-edit) still maps to `undefined` so
+ * downstream consumers can rely on `conflictsWith === undefined`
+ * meaning "this record makes no counter-claim".
+ *
+ * Anything that fails to parse cleanly (corrupt JSON, non-array,
+ * non-string elements) also degrades to `undefined`. We don't surface
+ * a parse error because a corrupted column is not a caller-actionable
+ * failure mode and we don't want every consumer to wrap reads in
+ * try/catch for an unreachable case (mirrors the `getRejectionReason`
+ * decision in Epic 2).
+ */
+function parseConflictsWith(
+  raw: string | null,
+): ReadonlyArray<string> | undefined {
+  if (raw === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    if (!parsed.every((x) => typeof x === "string")) return undefined;
+    return Object.freeze([...(parsed as string[])]);
+  } catch {
+    return undefined;
+  }
 }
 
 function rowToSummary(
@@ -116,6 +152,7 @@ function rowToSummary(
     lastVerifiedAt: row.last_verified_at ?? undefined,
     stale: isStale(row.review_after),
     score,
+    conflictsWith: parseConflictsWith(row.conflicts_with),
   };
 }
 
@@ -323,6 +360,13 @@ export interface ImportLoreInput {
   readonly createdAt?: string;
   readonly updatedAt?: string;
   readonly lastVerifiedAt?: string;
+  /**
+   * Round-trip support for counter-records. Storage column accepts NULL
+   * (record makes no counter-claim) or a JSON id array. An empty array
+   * is normalised to NULL on write so the on-disk invariant
+   * "NULL or non-empty array" holds.
+   */
+  readonly conflictsWith?: ReadonlyArray<string>;
 }
 
 export interface ImportResult {
@@ -373,6 +417,10 @@ export function upsertLoreFromImport(
     .get(input.id) as { rowid: number } | undefined;
   const isCreate = !existing;
 
+  const conflictsWith =
+    input.conflictsWith && input.conflictsWith.length > 0
+      ? JSON.stringify([...input.conflictsWith])
+      : null;
   const tx = db.transaction(() => {
     if (isCreate) {
       const info = db
@@ -381,8 +429,9 @@ export function upsertLoreFromImport(
             id, title, summary, body, author, team,
             status, source, review_after, confidence,
             superseded_by, restricted,
-            created_at, updated_at, last_verified_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_at, updated_at, last_verified_at,
+            conflicts_with
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -400,6 +449,7 @@ export function upsertLoreFromImport(
           createdAt,
           updatedAt,
           input.lastVerifiedAt ?? null,
+          conflictsWith,
         );
       const rowid = Number(info.lastInsertRowid);
       db.prepare(
@@ -412,7 +462,8 @@ export function upsertLoreFromImport(
            author = ?, team = ?, status = ?,
            source = ?, review_after = ?, confidence = ?,
            superseded_by = ?, restricted = ?,
-           updated_at = ?, last_verified_at = ?
+           updated_at = ?, last_verified_at = ?,
+           conflicts_with = ?
          WHERE id = ?`,
       ).run(
         input.title,
@@ -428,6 +479,7 @@ export function upsertLoreFromImport(
         input.restricted ? 1 : 0,
         updatedAt,
         input.lastVerifiedAt ?? null,
+        conflictsWith,
         input.id,
       );
       const rowid = (
@@ -466,6 +518,168 @@ export function upsertLoreFromImport(
  */
 export function suggestLore(db: Database, input: AddLoreInput): Lore {
   return insertLore(db, input, "draft");
+}
+
+/**
+ * Input for `reportConflict`: an agent has observed something in code
+ * that contradicts a canonical (active) record and wants to surface
+ * the disagreement for human triage. ALWAYS creates a DRAFT counter-
+ * record; NEVER mutates the original. See ADR-003.
+ */
+export interface ReportConflictInput {
+  /** ID of the canonical record being challenged. Must exist + be active + not restricted. */
+  readonly existingId: string;
+  /** Human-readable description of the contradiction. Becomes the counter's summary + body intro. 1..800 chars. */
+  readonly observation: string;
+  readonly source?: string;
+  readonly repos?: ReadonlyArray<string>;
+  readonly tags?: ReadonlyArray<string>;
+}
+
+/**
+ * Reason a `reportConflict` call refused. Each value is distinct so
+ * the MCP layer can audit-log the cause without leaking the original
+ * record's contents.
+ */
+export type ReportConflictRefusal =
+  | "unknown_existing_id"
+  | "non_active_existing_record"
+  | "restricted_existing_record"
+  | "empty_observation"
+  | "observation_too_long";
+
+export class ReportConflictError extends Error {
+  readonly reason: ReportConflictRefusal;
+  constructor(reason: ReportConflictRefusal, message: string) {
+    super(message);
+    this.name = "ReportConflictError";
+    this.reason = reason;
+  }
+}
+
+const REPORT_CONFLICT_OBSERVATION_MAX = 800;
+const REPORT_CONFLICT_TITLE_FRAGMENT_MAX = 60;
+
+/**
+ * Create a DRAFT counter-record challenging an existing active lore
+ * record. The new draft carries `conflictsWith = [existingId]` and the
+ * existing record receives a `conflict_reported` event keyed to it
+ * (with payload `{counterDraftId}`) so the audit chain shows the
+ * record has been challenged. The original lore row is NEVER UPDATEd —
+ * that one-way link is the trust-model boundary that keeps agents
+ * from silently mutating canonical knowledge. See ADR-003.
+ *
+ * Throws `ReportConflictError` (with a specific `reason`) when the
+ * existing record is unknown, not active, or restricted; the MCP layer
+ * uses the `reason` to audit-log the refusal without leaking the
+ * original record's fields.
+ *
+ * Idempotency: deliberately not deduped. Two agents flagging the same
+ * record produce two distinct drafts; the reviewer triages them via
+ * the existing review/reject flow.
+ */
+export function reportConflict(
+  db: Database,
+  input: ReportConflictInput,
+): Lore {
+  const observation = input.observation;
+  if (typeof observation !== "string" || observation.trim().length === 0) {
+    throw new ReportConflictError(
+      "empty_observation",
+      "reportConflict: observation must be a non-empty string",
+    );
+  }
+  if (observation.length > REPORT_CONFLICT_OBSERVATION_MAX) {
+    throw new ReportConflictError(
+      "observation_too_long",
+      `reportConflict: observation ${observation.length} chars exceeds cap ${REPORT_CONFLICT_OBSERVATION_MAX}`,
+    );
+  }
+  const existing = db
+    .prepare("SELECT status, restricted FROM lore WHERE id = ?")
+    .get(input.existingId) as
+    | { status: LoreStatus; restricted: 0 | 1 }
+    | undefined;
+  if (!existing) {
+    throw new ReportConflictError(
+      "unknown_existing_id",
+      `reportConflict: existingId '${input.existingId}' not found`,
+    );
+  }
+  if (existing.status !== "active") {
+    throw new ReportConflictError(
+      "non_active_existing_record",
+      `reportConflict: existing record '${input.existingId}' is ${existing.status}, not active`,
+    );
+  }
+  if (existing.restricted === 1) {
+    // Refusal text deliberately does NOT echo the record's title — the
+    // MCP layer is the env-gated boundary, and the core helper must
+    // never be an oracle for restricted-record metadata.
+    throw new ReportConflictError(
+      "restricted_existing_record",
+      `reportConflict: existing record '${input.existingId}' is restricted`,
+    );
+  }
+
+  // Derive the counter-record's title from the observation: a short,
+  // human-readable fragment so reviewers see WHAT is being challenged
+  // at a glance without opening the body. Always prefixed
+  // `[conflict-report]` so the queue surface is obvious.
+  const trimmedObs = observation.trim();
+  const titleFragment =
+    trimmedObs.length > REPORT_CONFLICT_TITLE_FRAGMENT_MAX
+      ? trimmedObs.slice(0, REPORT_CONFLICT_TITLE_FRAGMENT_MAX - 1) + "…"
+      : trimmedObs;
+  const title = `[conflict-report] ${titleFragment}`;
+  // Summary is the trimmed observation as-is (it's already bounded);
+  // body adds a footer pointing at the challenged record so reviewers
+  // can jump straight to it via `loreguard show <existingId>`.
+  const summary = trimmedObs;
+  const body =
+    trimmedObs +
+    "\n\n---\n" +
+    `Counter-claim against \`${input.existingId}\`. ` +
+    `Approve to make this disagreement canonical; reject if the original record is right; ` +
+    `or use \`loreguard supersede\` / \`loreguard update\` to resolve.\n`;
+  const tags = ["conflict-report", ...(input.tags ?? [])];
+
+  // Wrap insertLore + conflicts_with write + event emit in a single
+  // transaction so a partial counter-record (without the link) can
+  // never become visible.
+  let draft!: Lore;
+  const tx = db.transaction(() => {
+    draft = insertLore(
+      db,
+      {
+        title,
+        summary,
+        body,
+        source: input.source,
+        repos: input.repos,
+        tags,
+        author: "agent",
+      },
+      "draft",
+    );
+    db.prepare("UPDATE lore SET conflicts_with = ? WHERE id = ?").run(
+      JSON.stringify([input.existingId]),
+      draft.id,
+    );
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'conflict_reported', ?, ?)",
+    ).run(
+      input.existingId,
+      nowIso(),
+      JSON.stringify({ counterDraftId: draft.id }),
+    );
+  });
+  tx();
+
+  // Re-fetch so the returned Lore reflects the post-UPDATE
+  // conflicts_with field (insertLore returned the row before the
+  // UPDATE landed).
+  return getLore(db, draft.id)!;
 }
 
 export function getLore(db: Database, id: string): Lore | null {
