@@ -238,20 +238,13 @@ queue catches both your induction drafts and any drafts agents
 suggest later via `suggest_lore` — single triage point, no separate
 "agent inbox" to babysit.
 
-When you reject a draft, the interactive flow prompts for an optional
-**reason** (`Reason? (optional, blank to skip):`). The reason lands
-on the `rejected` event payload, so the agent that suggested it (or
-future-you reading the audit chain) can see *why* the draft was
-dropped instead of re-suggesting the same shape next session. Closes
-the feedback loop without adding a new lifecycle.
+For scripted use: `loreguard approve <id>` and `loreguard reject <id>`.
+For a quick non-interactive list: `loreguard review --list`.
 
-For scripted use:
-
-```bash
-loreguard approve <id>
-loreguard reject <id> --reason "wrong scope — convention is per-repo, not org-wide"
-loreguard review --list   # non-interactive overview
-```
+> The `--reason "..."` flag on `reject` (so the agent that suggested
+> the draft can see *why* it was dropped) lives on the sibling
+> `feature/rejection-reason-capture` branch; available once that
+> branch merges to `main`.
 
 ### Step 3 — wire the agent
 
@@ -476,7 +469,7 @@ lands with the conflict-records branch):
 
 - `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
 - `get_lore({ id })` — full body of one record.
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Over-cap inputs (`title > 200`, `summary > 800`) return a **structured error** `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` instead of failing through zod's max-cap path — the agent can paste `suggested_cut` back as a corrected retry without a human round-trip. Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits).
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits); `title` and `summary` are capped at 200 and 800 chars respectively. *A structured `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` response shape — so agents can paste `suggested_cut` back as a corrected retry without a human round-trip — lives on the sibling `feature/structured-validation-errors` branch and ships when it merges.*
 - `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. Restricted existing records are env-gated (`LOREGUARD_ALLOW_RESTRICTED_MCP=1`) the same way as `get_lore`.
 - `record_absence({ query, reason, repo?, expiresInDays? })` — agent searched, found nothing, AND has confirmed the gap is real and durable (not just a phrasing miss). Records a **self-expiring** marker (default 30 days; max 365) so the next `search_lore` on the same normalised query surfaces `absence_marker: { reason, ... }` instead of returning empty again. **Don't auto-call this on every zero-hit search** — only when the absence is itself the finding. No review gate (low-stakes, time-bounded — distinct from drafts). Markers are normalised order-independently and case-insensitively so `"payments-svc retry policy"` and `"Retry POLICY payments-svc"` share a marker. Repo-scoped markers shadow global ones when the search is also repo-scoped.
 
@@ -708,13 +701,22 @@ loreguard stats --json                # machine-readable output for piping
   `suggested / approved / rejected / deprecated / superseded /
   updated / reads / imports`.
 
-**Local-only by construction.** The data lives in your SQLite
-`events` table; there is no network call. To turn read tracking off
-entirely, set `LOREGUARD_NO_TELEMETRY=1` (or the broader
-`LOREGUARD_AUDIT_OFF=1` which silences both audit and read events —
-the test suite uses this to keep counters clean). `loreguard doctor`
-surfaces whether tracking is on or off so you can confirm at a
-glance.
+**Local-only by construction.** Read tracking writes to your SQLite
+`events` table on the same machine — *no data leaves the box*. The
+"telemetry" word in the env var name is historical; this is just
+local counters, not outbound telemetry. To turn it off entirely,
+set `LOREGUARD_NO_TELEMETRY=1` (the dedicated off-switch) or the
+broader `LOREGUARD_AUDIT_OFF=1` (which silences both MCP audit and
+read events — the test suite uses this to keep counters clean).
+`loreguard doctor` surfaces whether tracking is on or off so you
+can confirm at a glance.
+
+> Read events record `lore_id` + `kind: 'read'` + `ts` only. Not the
+> query, not the calling agent, not who you are. The audit log
+> (separate, `~/.loreguard/audit.jsonl`) records MCP tool calls and
+> may include search-query text — that's the lever for understanding
+> *what was asked*; `events` is the lever for *which records pulled
+> weight*. Both stay local.
 
 ### Inspect / back up your lore
 
@@ -740,6 +742,15 @@ See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-F
 - Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; both MCP `search_lore` and `get_lore` env-gated for restricted records).
 - Stale or unreviewed memory dominating retrieval (`stale: true` flag; lifecycle filtering; agent suggestions land as drafts).
 - Audit-log leakage of body content (sanitised pre-write; `loreguard audit` renders redacted by default).
+
+> **What the audit log DOES contain** (always local — `~/.loreguard/audit.jsonl`,
+> mode 0600): MCP tool name, search-query text, suggested record's
+> title (not summary or body), `source` URL, length-only counts for
+> larger fields, redacted display in `loreguard audit`. Read tracking
+> (`events` table) is separate and contains lore_id + 'read' + ts
+> only — no query, no agent identity. Disable either via env vars
+> (`LOREGUARD_AUDIT_OFF=1`, `LOREGUARD_NO_TELEMETRY=1`); see [Where
+> data lives](#where-data-lives) for the full knob list.
 
 **`loreguard` does not protect against:**
 

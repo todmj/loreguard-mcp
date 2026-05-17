@@ -33,9 +33,18 @@ export interface RecordAbsenceInput {
   readonly reason: string;
   readonly repo?: string;
   readonly recordedBy: string;
-  /** Default 30. Clamped [1, 365] by the CLI/MCP layer; core trusts the caller. */
+  /**
+   * Default 14. Shorter half-life than the 30 we originally shipped —
+   * external review flagged that MCP-writable retrieval state is a
+   * trust-model exception and should age out faster by default. CLI
+   * callers can still pass --expires-days for longer retention.
+   * Clamped [1, 365] by the CLI/MCP layer; core trusts the caller.
+   */
   readonly expiresInDays?: number;
 }
+
+/** Default expiry. Kept here so CLI + MCP + tests all agree. */
+export const DEFAULT_ABSENCE_EXPIRY_DAYS = 14;
 
 /**
  * Normalise a query for marker matching. Order-independent (sorted),
@@ -97,7 +106,9 @@ export function recordAbsence(
   }
   const id = newLoreId();
   const recordedAt = nowIso();
-  const expiresAt = isoNDaysFromNow(input.expiresInDays ?? 30);
+  const expiresAt = isoNDaysFromNow(
+    input.expiresInDays ?? DEFAULT_ABSENCE_EXPIRY_DAYS,
+  );
   db.prepare(
     `INSERT INTO absence_markers (id, query, repo, reason, recorded_at, expires_at, recorded_by)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,

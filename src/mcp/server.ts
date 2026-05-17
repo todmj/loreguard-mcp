@@ -486,8 +486,10 @@ export async function runMcpServer(): Promise<void> {
           .max(365)
           .optional()
           .describe(
-            "Days until the marker auto-expires. Default 30. Stale 'we " +
-              "checked' claims age out so they don't become permanent.",
+            "Days until the marker auto-expires. Default 14. Stale 'we " +
+              "checked' claims age out fast so they don't become permanent " +
+              "and a bad call from one agent can't poison retrieval for a " +
+              "whole month.",
           ),
       },
     },
