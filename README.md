@@ -47,6 +47,44 @@ loreguard --version     # → 0.1.0
 loreguard doctor
 ```
 
+### One-command bootstrap — `loreguard setup`
+
+Day-to-day use is *ambient* — once Claude Code knows about the
+loreguard MCP server and your CLAUDE.md has the retrieval rule, you
+just talk to Claude about the repo and it pulls lore automatically. No
+slash command, no skill invocation needed.
+
+`loreguard setup` collapses the three "make Claude use it" steps into
+one idempotent command:
+
+```bash
+loreguard setup                       # project CLAUDE.md (./CLAUDE.md)
+loreguard setup --claude-md user      # or user-global ~/.claude/CLAUDE.md
+loreguard setup --dry-run             # show what would happen, do nothing
+```
+
+What it does:
+
+1. `claude mcp add loreguard loreguard-mcp` (if not already registered).
+2. Appends the retrieval rule to `CLAUDE.md` between
+   `<!-- loreguard:retrieval-rule begin -->` / `... end -->` markers
+   (no-op if already present; safe to re-run after upgrades).
+3. Copies the `/loreguard-onboard` skill into
+   `~/.claude/skills/loreguard-onboard/SKILL.md`.
+
+Each step is idempotent. `--skip-mcp`, `--skip-claude-md`, `--skip-skill`
+opt out individually. `--force` overwrites a drifted retrieval block or
+a hand-edited skill.
+
+After this, day-to-day use looks like:
+
+```text
+You:   "What's the convention for password hashing here?"
+Claude: <calls search_lore("password hashing"); answers from the result>
+```
+
+No skill, no slash command, no manual `search_lore` call.
+
 To uninstall the link later:
 
 ```bash
@@ -159,6 +197,37 @@ This is the opposite of "scan repo and invent memory" — it's a
 human-driven cold-start. Aim answers at non-obvious, high-consequence
 knowledge (see [What deserves lore?](#what-deserves-lore) below);
 "we use TypeScript" goes in `CLAUDE.md`, not here.
+
+#### Agent-driven alternative — `/loreguard-onboard` skill
+
+`loreguard induct` works without an agent in the loop — it asks the
+same 10 generic questions every time. When you *do* have an agent
+available, the bundled **`/loreguard-onboard` Claude skill** does
+something better: it reads the repo first (README, ADRs, recent
+commits, deprecation markers, in-flight migrations) and surfaces
+*repo-specific* candidate drafts grounded in real source citations,
+then asks targeted follow-ups instead of the generic 10.
+
+Same trust model — every record still lands as a draft and goes
+through `loreguard review`. Install:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -r skills/loreguard-onboard ~/.claude/skills/
+```
+
+Then in Claude Code:
+
+```text
+/loreguard-onboard
+```
+
+The skill needs the `loreguard-mcp` server already configured (so
+`search_lore` / `get_lore` / `suggest_lore` are callable). See
+`skills/loreguard-onboard/SKILL.md` for the full procedure.
+
+Use the CLI for offline / scripted cold-starts; use the skill when you
+want the agent to do the repo-reading work for you.
 
 ### Step 2 — `loreguard review` (triage drafts)
 
