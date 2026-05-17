@@ -15,6 +15,11 @@ import {
   shouldGateRestrictedGet,
   stripPossibleConflicts,
 } from "./redact.js";
+import {
+  auditMessageForTooLong,
+  checkLength,
+  LENGTH_CAPS,
+} from "./validation.js";
 
 /**
  * R1 — MCP server. Stdio transport only (no network listener). Three
@@ -271,13 +276,24 @@ export async function runMcpServer(): Promise<void> {
         "discovered. NOT for transient debug notes or task-specific " +
         "context — that belongs in the chat, not the long-term memory.",
       inputSchema: {
-        title: z.string().min(1).max(200).describe("Short title — what is the rule / fact?"),
+        // Length caps live in the handler, not the schema. zod's max-cap
+        // path produced "body is undefined" upstream when an over-cap
+        // summary failed parsing — the cause was masked and agents
+        // dropped the suggestion. The handler now returns a structured
+        // `{error: "summary_too_long", suggested_cut, ...}` the agent
+        // can correct against. The description still names the cap so
+        // well-behaved agents respect it upfront.
+        title: z
+          .string()
+          .min(1)
+          .describe(
+            `Short title — what is the rule / fact? Hard cap ${LENGTH_CAPS.title} chars.`,
+          ),
         summary: z
           .string()
           .min(1)
-          .max(800)
           .describe(
-            "One-paragraph summary (≤ 800 chars). This is what most search " +
+            `One-paragraph summary (≤ ${LENGTH_CAPS.summary} chars). This is what most search ` +
               "results show — should stand alone without the body; assume " +
               "readers won't drill in. Aim for the *why* and the *what*, " +
               "not just the *what*; a longer cap exists so search hits can " +
@@ -337,6 +353,36 @@ export async function runMcpServer(): Promise<void> {
         confidence: args.confidence,
         team: args.team,
       };
+      // Length guards — check title first, then summary. Return the
+      // structured error to the agent (NOT isError: true — the response
+      // is well-formed, the agent just has to retry with shorter input)
+      // and log the cap breach to the audit log with a greppable shape.
+      const titleErr = checkLength("title", args.title);
+      if (titleErr) {
+        audit({
+          tool: "suggest_lore",
+          request: sanitised,
+          error: auditMessageForTooLong(titleErr),
+        });
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(titleErr, null, 2) },
+          ],
+        };
+      }
+      const summaryErr = checkLength("summary", args.summary);
+      if (summaryErr) {
+        audit({
+          tool: "suggest_lore",
+          request: sanitised,
+          error: auditMessageForTooLong(summaryErr),
+        });
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(summaryErr, null, 2) },
+          ],
+        };
+      }
       try {
         const lore = suggestLore(db, {
           title: args.title,
