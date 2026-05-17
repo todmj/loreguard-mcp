@@ -29,6 +29,14 @@ What crosses each boundary:
   never emits audit lines as tool results.
 - The DB file is never read by the MCP server other than through SQL
   queries — there's no "dump the whole table" tool.
+- The `events` table (which now also records `read` events — one per
+  search hit and one per `getLore` fetch, used by `loreguard stats`)
+  stays local. The word "telemetry" in `LOREGUARD_NO_TELEMETRY` is
+  historical — there is no outbound telemetry to disable; the env var
+  silences the local counters.
+- Stop-hook session markers (`~/.loreguard/hooks/session-<id>.nudged`)
+  stay local. The hook reads Claude's stdin and emits stdout — no
+  network or filesystem outside the user's home dir.
 - The `loreguard` application code makes no outbound HTTP calls. `package.json`
   deliberately has no `axios` / `node-fetch` / telemetry SDKs. The
   `@modelcontextprotocol/sdk` dependency does include unused HTTP/client
@@ -55,5 +63,11 @@ The audit log will show every time it does.
 
 - DB: `~/.loreguard/lore.db` (mode `0600`, parent dir `0700`)
 - Audit: `~/.loreguard/audit.jsonl` (mode `0600`)
-- Override either via `LOREGUARD_DB` / `LOREGUARD_AUDIT_LOG` env vars (useful for
-  team-shared DBs on a synced volume or for test fixtures).
+- Stop-hook session markers: `~/.loreguard/hooks/session-<id>.nudged`
+  (zero-byte files; existence is the signal)
+- Override DB / audit paths via `LOREGUARD_DB` / `LOREGUARD_AUDIT_LOG`
+  env vars (useful for team-shared DBs on a synced volume or for test
+  fixtures).
+- Opt out of read tracking via `LOREGUARD_NO_TELEMETRY=1` (only
+  silences the `read` events in the `events` table — does not touch
+  audit). `LOREGUARD_AUDIT_OFF=1` silences both.
