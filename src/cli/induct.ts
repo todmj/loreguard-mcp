@@ -233,7 +233,7 @@ export function runInduct(db: Database, opts: InductOptions): InductResult {
       continue;
     }
     const title = `[induction] ${q.topic}`;
-    const summary = shortSummary(a.answer, 500);
+    const summary = shortSummary(a.answer, 800);
     const body =
       a.answer.trim() +
       `\n\n(induction session, ${now.toISOString().slice(0, 10)})`;
