@@ -37,6 +37,15 @@ import {
 } from "./induct.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
+import {
+  addMcpServer,
+  appendInstructionsToFile,
+  claudeMdPath,
+  type ClaudeMdScope,
+  copySkillFile,
+  findBundledSkillPath,
+  skillDestPath,
+} from "./setup.js";
 import { exportToDir, importFromDir } from "./sync.js";
 
 const HELP = `loreguard — reviewed project memory for AI coding agents
@@ -109,6 +118,13 @@ COMMANDS
                             permissions, FTS index, audit log, restricted
                             MCP gate, version. Exits non-zero on hard
                             failures, zero on warnings.
+  setup [--dry-run] [--force] [--claude-md project|user]
+                            One-command bootstrap: register the MCP server
+                            with Claude Code, append the retrieval rule to
+                            CLAUDE.md, and install /loreguard-onboard into
+                            ~/.claude/skills/. Idempotent. Use --skip-mcp,
+                            --skip-claude-md, --skip-skill to opt out of
+                            any step individually.
   demo [--force | --clean]  Seed five illustrative records (tagged 'demo')
                             so you can try list / search / review without
                             authoring content first. Refuses to seed into
@@ -957,6 +973,109 @@ async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
+async function cmdSetup(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const dryRun = getBool(args.flags, "dry-run");
+  const force = getBool(args.flags, "force");
+  const skipMcp = getBool(args.flags, "skip-mcp");
+  const skipClaudeMd = getBool(args.flags, "skip-claude-md");
+  const skipSkill = getBool(args.flags, "skip-skill");
+  const scopeFlag = getString(args.flags, "claude-md") ?? "project";
+  if (scopeFlag !== "project" && scopeFlag !== "user") {
+    process.stderr.write(
+      `loreguard: --claude-md must be 'project' or 'user' (got '${scopeFlag}')\n`,
+    );
+    return 2;
+  }
+  const scope = scopeFlag as ClaudeMdScope;
+  const cmPath = claudeMdPath(scope);
+
+  process.stdout.write(
+    `loreguard setup${dryRun ? " (dry-run)" : ""}\n` +
+      `  claude.md scope: ${scope} (${cmPath})\n\n`,
+  );
+
+  // [1/3] MCP server
+  if (skipMcp) {
+    process.stdout.write("[1/3] MCP server: skipped (--skip-mcp)\n");
+  } else if (dryRun) {
+    process.stdout.write(
+      "[1/3] would run: claude mcp add loreguard loreguard-mcp\n",
+    );
+  } else {
+    const r = addMcpServer();
+    if (r.action === "registered") {
+      process.stdout.write(
+        "[1/3] ✓ registered loreguard MCP server with Claude Code\n",
+      );
+    } else if (r.action === "already-present") {
+      process.stdout.write("[1/3] · MCP server already registered\n");
+    } else if (r.action === "claude-cli-missing") {
+      process.stdout.write(`[1/3] ! ${r.detail}\n`);
+    } else {
+      process.stdout.write(`[1/3] ! claude mcp add failed: ${r.detail ?? ""}\n`);
+    }
+  }
+
+  // [2/3] CLAUDE.md retrieval rule
+  if (skipClaudeMd) {
+    process.stdout.write("[2/3] CLAUDE.md retrieval rule: skipped (--skip-claude-md)\n");
+  } else if (dryRun) {
+    process.stdout.write(`[2/3] would append retrieval rule to ${cmPath}\n`);
+  } else {
+    const r = appendInstructionsToFile(cmPath, force);
+    if (r.action === "created") {
+      process.stdout.write(`[2/3] ✓ created ${cmPath} with retrieval rule\n`);
+    } else if (r.action === "appended") {
+      process.stdout.write(`[2/3] ✓ appended retrieval rule to ${cmPath}\n`);
+    } else if (r.action === "replaced") {
+      process.stdout.write(`[2/3] ✓ replaced existing retrieval block in ${cmPath}\n`);
+    } else if (r.action === "already-present") {
+      process.stdout.write(`[2/3] · retrieval rule already present in ${cmPath}\n`);
+    } else {
+      process.stdout.write(
+        `[2/3] ! ${cmPath} has a partial loreguard block (only one marker) — re-run with --force to replace\n`,
+      );
+    }
+  }
+
+  // [3/3] /loreguard-onboard skill
+  if (skipSkill) {
+    process.stdout.write("[3/3] /loreguard-onboard skill: skipped (--skip-skill)\n");
+  } else if (dryRun) {
+    process.stdout.write(
+      `[3/3] would copy skill to ${skillDestPath()}\n`,
+    );
+  } else {
+    try {
+      const r = copySkillFile(findBundledSkillPath(), skillDestPath(), force);
+      if (r.action === "copied") {
+        process.stdout.write(`[3/3] ✓ installed skill at ${r.dest}\n`);
+      } else if (r.action === "overwritten") {
+        process.stdout.write(`[3/3] ✓ overwrote skill at ${r.dest}\n`);
+      } else if (r.action === "already-present") {
+        process.stdout.write(`[3/3] · skill already up to date at ${r.dest}\n`);
+      } else {
+        process.stdout.write(
+          `[3/3] ! ${r.dest} exists and differs from bundled — re-run with --force to overwrite\n`,
+        );
+      }
+    } catch (err) {
+      process.stdout.write(
+        `[3/3] ! ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  process.stdout.write(
+    "\nDone. Next:\n" +
+      "  loreguard init        # if you haven't already\n" +
+      "  loreguard demo        # try the workflow with sample records\n" +
+      "  loreguard induct      # cold-start interview on a real repo\n" +
+      "                        # or, in Claude Code: /loreguard-onboard\n",
+  );
+  return 0;
+}
+
 async function cmdDoctor(): Promise<number> {
   const { exitCode, checks } = runDoctor();
   process.stdout.write(renderDoctor(checks) + "\n");
@@ -1116,6 +1235,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdExport(parsed);
       case "sync":
         return await cmdSync(parsed);
+      case "setup":
+        return await cmdSetup(parsed);
       case "demo":
         return await cmdDemo(parsed);
       case "induct":
