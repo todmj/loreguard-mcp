@@ -77,9 +77,13 @@ COMMANDS
                             [s]kip / [q]uit. Use --list (or pipe to stdout)
                             for the non-interactive list view.
   approve <id>              Promote draft → active.
-  reject <id>               Drop a draft. Refuses non-drafts (use
+  reject <id> [--reason "..."]
+                            Drop a draft. Refuses non-drafts (use
                             deprecate instead). Emits a 'rejected' event
                             so the audit chain shows the triage decision.
+                            --reason is optional but recommended — gives
+                            the agent (or future-you) a record of WHY
+                            the draft was dropped.
   deprecate <id>            Mark deprecated.
   supersede <old-id> --with <new-id>
                             Mark <old-id> as superseded by <new-id>.
@@ -415,7 +419,13 @@ async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<number> {
         continue;
       }
       if (answer === "r" || answer === "reject" || answer === "n") {
-        const ok = rejectLore(db, d.id);
+        // Capture an optional reason so the agent (or future-me) can see
+        // *why* a draft was dropped — keeps the feedback loop closed.
+        // Blank/whitespace is normalised to "no reason" inside rejectLore.
+        const reasonInput = (
+          await prompt("  reason (optional, blank to skip): ")
+        ).trim();
+        const ok = rejectLore(db, d.id, reasonInput || undefined);
         process.stdout.write(
           ok ? `✗ rejected ${d.id}\n\n` : `! could not reject ${d.id}\n\n`,
         );
@@ -454,9 +464,12 @@ async function cmdReject(args: ReturnType<typeof parseArgs>): Promise<number> {
     process.stderr.write("loreguard: reject <id> requires an id\n");
     return 2;
   }
+  // getString returns undefined for a bare `--reason` (no value) too,
+  // so a missing value can't be silently coerced to the literal "true".
+  const reason = getString(args.flags, "reason");
   const db = openDb();
   try {
-    const ok = rejectLore(db, id);
+    const ok = rejectLore(db, id, reason);
     if (!ok) {
       process.stderr.write(
         `loreguard: cannot reject ${id} (unknown id or not a draft; use \`loreguard deprecate\` for active records)\n`,
