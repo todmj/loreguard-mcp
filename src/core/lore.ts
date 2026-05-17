@@ -718,24 +718,71 @@ export function updateLore(
  * on non-drafts — promoted records get `deprecateLore` / `supersedeLore`
  * instead.
  *
+ * The optional `reason` closes the feedback loop on agent-suggested
+ * drafts: when present and non-empty (after `.trim()`), it lands on the
+ * `rejected` event payload as `JSON.stringify({ reason })`. Empty,
+ * whitespace-only, or omitted reasons leave `payload = NULL` so the
+ * absence of a reason is distinguishable from `{ reason: "" }`. Read
+ * back with `getRejectionReason(db, id)`.
+ *
  * Returns true on success, false if the id doesn't exist or isn't a draft.
  */
-export function rejectLore(db: Database, id: string): boolean {
+export function rejectLore(
+  db: Database,
+  id: string,
+  reason?: string,
+): boolean {
   const ts = nowIso();
   const row = db
     .prepare("SELECT rowid, status FROM lore WHERE id = ?")
     .get(id) as { rowid: number; status: LoreStatus } | undefined;
   if (!row) return false;
   if (row.status !== "draft") return false;
+  const trimmed = reason?.trim();
+  const payload = trimmed ? JSON.stringify({ reason: trimmed }) : null;
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare(
-      "INSERT INTO events (lore_id, kind, ts) VALUES (?, 'rejected', ?)",
-    ).run(id, ts);
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'rejected', ?, ?)",
+    ).run(id, ts, payload);
   });
   tx();
   return true;
+}
+
+/**
+ * Read the reason captured on the most recent `rejected` event for `id`.
+ * Returns `undefined` when the rejection had no reason (NULL payload),
+ * when the id was never rejected, or when the payload is unreadable
+ * (deliberately swallowed — a corrupt event row from an external write
+ * is not a caller-actionable error, and we don't want every caller of
+ * this helper to wrap it in try/catch for an unreachable case).
+ */
+export function getRejectionReason(
+  db: Database,
+  id: string,
+): string | undefined {
+  const row = db
+    .prepare(
+      "SELECT payload FROM events WHERE lore_id = ? AND kind = 'rejected' ORDER BY rowid DESC LIMIT 1",
+    )
+    .get(id) as { payload: string | null } | undefined;
+  if (!row || row.payload === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(row.payload);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "reason" in parsed &&
+      typeof (parsed as { reason: unknown }).reason === "string"
+    ) {
+      return (parsed as { reason: string }).reason;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function deleteLore(db: Database, id: string): boolean {
