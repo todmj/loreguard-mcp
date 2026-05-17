@@ -136,6 +136,62 @@ function tagsOf(db: Database, id: string): string[] {
 }
 
 /**
+ * Batched repo lookup for hot loops (searchLore, findPossibleDuplicates,
+ * listDrafts, exportLore). Returns a Map<id, repos[]> so callers can
+ * substitute for `reposOf(db, row.id)` without changing call shape.
+ *
+ * The N+1 hand-rolled equivalent (`reposOf` once per row) was the
+ * dominant latency on agent search calls; one IN-clause query is
+ * dramatically cheaper. Per-id arrays come out sorted alphabetically
+ * because the result is ordered by (lore_id, repo).
+ *
+ * Pre-fills every requested id with `[]` so callers don't have to
+ * branch on missing keys; an id with no repos still produces an empty
+ * array, matching the per-id helper's behaviour.
+ */
+function reposByIds(
+  db: Database,
+  ids: ReadonlyArray<string>,
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  if (ids.length === 0) return map;
+  for (const id of ids) map.set(id, []);
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT lore_id, repo FROM lore_repos
+       WHERE lore_id IN (${placeholders})
+       ORDER BY lore_id, repo`,
+    )
+    .all(...ids) as Array<{ lore_id: string; repo: string }>;
+  for (const r of rows) {
+    map.get(r.lore_id)!.push(r.repo);
+  }
+  return map;
+}
+
+function tagsByIds(
+  db: Database,
+  ids: ReadonlyArray<string>,
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  if (ids.length === 0) return map;
+  for (const id of ids) map.set(id, []);
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT lore_id, tag FROM lore_tags
+       WHERE lore_id IN (${placeholders})
+       ORDER BY lore_id, tag`,
+    )
+    .all(...ids) as Array<{ lore_id: string; tag: string }>;
+  for (const r of rows) {
+    map.get(r.lore_id)!.push(r.tag);
+  }
+  return map;
+}
+
+/**
  * Confidence invariants (R2 review):
  *   - A record without a `source` can never be `high` confidence. If a
  *     caller asks for `high` without a source, clamp down to `medium`.
@@ -789,11 +845,17 @@ export function searchLore(
   const rows = db.prepare(sql).all(...params) as Array<
     LoreRow & { score: number | null }
   >;
-  const summaries = rows.map((row) => {
-    const repos = reposOf(db, row.id);
-    const tags = tagsOf(db, row.id);
-    return rowToSummary(row, repos, tags, row.score ?? undefined);
-  });
+  const ids = rows.map((r) => r.id);
+  const repoMap = reposByIds(db, ids);
+  const tagMap = tagsByIds(db, ids);
+  const summaries = rows.map((row) =>
+    rowToSummary(
+      row,
+      repoMap.get(row.id) ?? [],
+      tagMap.get(row.id) ?? [],
+      row.score ?? undefined,
+    ),
+  );
   return annotatePossibleConflicts(summaries);
 }
 
@@ -966,25 +1028,32 @@ export function findPossibleDuplicates(
     sharedTags: string[];
     overlap: number;
   };
-  const scored: Scored[] = [];
-  for (const row of rows) {
+  // Pre-filter to the rows we'll actually score, then batch-hydrate
+  // their repos/tags in two queries instead of 2*N.
+  const visible = rows.filter((row) => {
     if (row.restricted === 1) {
       restrictedDuplicateCount++;
-      if (!allowRestricted) continue;
+      return allowRestricted;
     }
-    const repos = reposOf(db, row.id);
-    const tags = tagsOf(db, row.id);
+    return true;
+  });
+  const visibleIds = visible.map((r) => r.id);
+  const dupRepoMap = reposByIds(db, visibleIds);
+  const dupTagMap = tagsByIds(db, visibleIds);
+  const scored: Scored[] = visible.map((row) => {
+    const repos = dupRepoMap.get(row.id) ?? [];
+    const tags = dupTagMap.get(row.id) ?? [];
     const sharedRepos = repos.filter((r) => wantRepos.has(r));
     const sharedTags = tags.filter((t) => wantTags.has(t));
-    scored.push({
+    return {
       row,
       repos,
       tags,
       sharedRepos,
       sharedTags,
       overlap: sharedRepos.length + sharedTags.length,
-    });
-  }
+    };
+  });
   scored.sort((a, b) => {
     if (a.overlap !== b.overlap) return b.overlap - a.overlap;
     return a.row.score - b.row.score;
@@ -1041,8 +1110,11 @@ export function listDrafts(db: Database): LoreSummary[] {
       "SELECT *, NULL AS score FROM lore WHERE status = 'draft' ORDER BY created_at DESC",
     )
     .all() as Array<LoreRow & { score: null }>;
+  const ids = rows.map((r) => r.id);
+  const repoMap = reposByIds(db, ids);
+  const tagMap = tagsByIds(db, ids);
   return rows.map((r) =>
-    rowToSummary(r, reposOf(db, r.id), tagsOf(db, r.id)),
+    rowToSummary(r, repoMap.get(r.id) ?? [], tagMap.get(r.id) ?? []),
   );
 }
 
@@ -1084,7 +1156,12 @@ export function exportLore(
     ORDER BY updated_at DESC, id ASC
   `;
   const rows = db.prepare(sql).all(...params) as LoreRow[];
-  return rows.map((row) => rowToLore(row, reposOf(db, row.id), tagsOf(db, row.id)));
+  const ids = rows.map((r) => r.id);
+  const repoMap = reposByIds(db, ids);
+  const tagMap = tagsByIds(db, ids);
+  return rows.map((row) =>
+    rowToLore(row, repoMap.get(row.id) ?? [], tagMap.get(row.id) ?? []),
+  );
 }
 
 export function listTags(db: Database): string[] {

@@ -6,7 +6,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { redactRestricted, shouldGateRestrictedGet } from "../src/mcp/redact.js";
+import {
+  redactRestricted,
+  shouldGateRestrictedGet,
+  stripPossibleConflicts,
+} from "../src/mcp/redact.js";
 
 describe("redactRestricted", () => {
   it("returns a minimal refusal shape — no title, summary, body, source, or timestamps", () => {
@@ -83,5 +87,58 @@ describe("shouldGateRestrictedGet", () => {
         { LOREGUARD_ALLOW_RESTRICTED_MCP: "1" },
       ),
     ).toBe(false);
+  });
+});
+
+describe("stripPossibleConflicts", () => {
+  it("removes possibleConflicts from every hit before MCP serialisation", () => {
+    const hits = [
+      {
+        id: "abcd2345",
+        title: "a",
+        repos: ["payments-svc"],
+        tags: ["security"],
+        possibleConflicts: ["bcde2345"],
+      },
+      {
+        id: "bcde2345",
+        title: "b",
+        repos: ["payments-svc"],
+        tags: ["security"],
+        possibleConflicts: ["abcd2345"],
+      },
+      {
+        // A hit with no overlap — possibleConflicts absent. Should be
+        // returned unchanged (just without the optional field).
+        id: "cdef2345",
+        title: "c",
+        repos: ["other-svc"],
+        tags: [],
+      },
+    ];
+    const stripped = stripPossibleConflicts(hits);
+    expect(stripped).toHaveLength(3);
+    for (const h of stripped) {
+      expect(Object.keys(h)).not.toContain("possibleConflicts");
+    }
+    // The other fields survive verbatim — only the conflict hint is dropped.
+    expect(stripped[0]).toEqual({
+      id: "abcd2345",
+      title: "a",
+      repos: ["payments-svc"],
+      tags: ["security"],
+    });
+  });
+
+  it("does not mutate the input array or its records", () => {
+    const original = [
+      {
+        id: "abcd2345",
+        possibleConflicts: ["bcde2345"],
+      },
+    ];
+    const snapshot = JSON.parse(JSON.stringify(original));
+    stripPossibleConflicts(original);
+    expect(original).toEqual(snapshot);
   });
 });

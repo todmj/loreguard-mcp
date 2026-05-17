@@ -10,7 +10,11 @@ import {
   suggestLore,
 } from "../core/lore.js";
 import { openDb } from "../db/index.js";
-import { redactRestricted, shouldGateRestrictedGet } from "./redact.js";
+import {
+  redactRestricted,
+  shouldGateRestrictedGet,
+  stripPossibleConflicts,
+} from "./redact.js";
 
 /**
  * R1 — MCP server. Stdio transport only (no network listener). Three
@@ -153,11 +157,14 @@ export async function runMcpServer(): Promise<void> {
           resultCount: hits.length,
           resultIds: hits.map((h) => h.id),
         });
+        // possibleConflicts is a CLI-only heuristic for human triage —
+        // see stripPossibleConflicts for the rationale.
+        const mcpHits = stripPossibleConflicts(hits);
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ results: hits }, null, 2),
+              text: JSON.stringify({ results: mcpHits }, null, 2),
             },
           ],
         };

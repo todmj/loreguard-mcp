@@ -198,6 +198,7 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
     expect(defaultExport.written).toHaveLength(1);
     expect(defaultExport.excluded.restricted).toBe(1);
     expect(defaultExport.excluded.drafts).toBe(1);
+    expect(defaultExport.restrictedWritten).toBe(0);
 
     rmSync(dir, { recursive: true, force: true });
     const allOptins = exportToDir(db, dir, {
@@ -205,6 +206,28 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
       includeRestricted: true,
     });
     expect(allOptins.written).toHaveLength(3);
+    expect(allOptins.restrictedWritten).toBe(1);
+  });
+
+  it("restricted records exported with --include-restricted are chmod'd 0600; others stay 0644", () => {
+    const open = addLore(db, { title: "shareable", summary: "s", body: "B" });
+    const locked = addLore(db, {
+      title: "secret",
+      summary: "s",
+      body: "B",
+      restricted: true,
+    });
+    const result = exportToDir(db, dir, { includeRestricted: true });
+    expect(result.restrictedWritten).toBe(1);
+    // Skip the assertion on Windows/WSL where chmod is a no-op.
+    if (process.platform !== "win32") {
+      const openMode =
+        require("node:fs").statSync(join(dir, `${open.id}.md`)).mode & 0o777;
+      const lockedMode =
+        require("node:fs").statSync(join(dir, `${locked.id}.md`)).mode & 0o777;
+      expect(openMode).toBe(0o644);
+      expect(lockedMode).toBe(0o600);
+    }
   });
 
   it("import second time updates rather than duplicates", () => {
@@ -267,7 +290,7 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
 
   it("respects status declared in frontmatter (PR is the gate)", () => {
     // Manually write a deprecated record's .md, import, expect deprecated.
-    const id = "abcd1234";
+    const id = "abcd2345";
     const md =
       "---\n" +
       `id: ${id}\n` +
@@ -332,7 +355,7 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
     );
     writeFileSync(
       join(dir, "bad-status.md"),
-      "---\nid: x\ntitle: t\nsummary: s\nstatus: nonsense\n---\nbody\n",
+      "---\nid: abcd2345\ntitle: t\nsummary: s\nstatus: nonsense\n---\nbody\n",
     );
     const result = importFromDir(db, dir);
     expect(result.created).toBe(0);
@@ -340,5 +363,100 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
       "bad-status.md",
       "no-id.md",
     ]);
+  });
+
+  it("rejects records whose id is not the 8-char [a-z2-9] shape", () => {
+    // A typo or copy-paste mishap in the frontmatter must NOT become a
+    // permanent ghost row. Each malformed id below should land in
+    // `skipped`, not `created`.
+    const cases = [
+      { file: "ghost-prefix.md", id: "lor_abc12345" },
+      { file: "ghost-space.md", id: "lor abc 123" },
+      { file: "ghost-short.md", id: "abc" },
+      { file: "ghost-upper.md", id: "ABCD2345" },
+      { file: "ghost-banned-char.md", id: "abcd2340" }, // '0' is not in the alphabet
+    ];
+    for (const c of cases) {
+      writeFileSync(
+        join(dir, c.file),
+        `---\nid: ${c.id}\ntitle: t\nsummary: s\nstatus: active\n---\nbody\n`,
+      );
+    }
+    const result = importFromDir(db, dir);
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(0);
+    expect(result.skipped).toHaveLength(cases.length);
+    for (const s of result.skipped) {
+      expect(s.reason).toMatch(/invalid id/);
+    }
+  });
+
+  it("rejects non-boolean restricted, non-enum confidence, non-id supersededBy, non-ISO timestamps", () => {
+    writeFileSync(
+      join(dir, "bad-restricted.md"),
+      "---\nid: abcd2345\ntitle: t\nsummary: s\nstatus: active\nrestricted: maybe\n---\nb\n",
+    );
+    writeFileSync(
+      join(dir, "bad-confidence.md"),
+      "---\nid: bcde2345\ntitle: t\nsummary: s\nstatus: active\nconfidence: certain\n---\nb\n",
+    );
+    writeFileSync(
+      join(dir, "bad-superseded.md"),
+      "---\nid: cdef2345\ntitle: t\nsummary: s\nstatus: superseded\nsupersededBy: lor_999\n---\nb\n",
+    );
+    // "yesterday" is not parseable by Date.parse, so this is rejected.
+    // Date-only strings ("2024-01-01") and full ISO timestamps both
+    // parse cleanly and are accepted — that's deliberate, since the
+    // CLI seeds reviewAfter as date-only and we round-trip those.
+    writeFileSync(
+      join(dir, "bad-timestamp.md"),
+      "---\nid: defg2345\ntitle: t\nsummary: s\nstatus: active\nupdatedAt: yesterday\n---\nb\n",
+    );
+    const result = importFromDir(db, dir);
+    expect(result.created).toBe(0);
+    expect(result.skipped.map((s) => s.file).sort()).toEqual([
+      "bad-confidence.md",
+      "bad-restricted.md",
+      "bad-superseded.md",
+      "bad-timestamp.md",
+    ]);
+  });
+
+  it("default import refuses to overwrite a strictly-newer local record; --force overrides", () => {
+    // Establish a record, export it, then bump the local copy so the
+    // local updatedAt is strictly newer than the on-disk file's.
+    const a = addLore(db, { title: "v1", summary: "s", body: "B" });
+    exportToDir(db, dir);
+    // Force the local row forward by one second so updatedAt is strictly
+    // greater than the file's recorded updatedAt.
+    const future = new Date(Date.parse(a.updatedAt) + 1000).toISOString();
+    db.prepare("UPDATE lore SET updated_at = ?, title = 'local-edit' WHERE id = ?").run(
+      future,
+      a.id,
+    );
+
+    const safe = importFromDir(db, dir);
+    expect(safe.created).toBe(0);
+    expect(safe.updated).toBe(0);
+    expect(safe.skippedNewer).toBe(1);
+    expect(getLore(db, a.id)?.title).toBe("local-edit");
+
+    const forced = importFromDir(db, dir, { force: true });
+    expect(forced.updated).toBe(1);
+    expect(forced.skippedNewer).toBe(0);
+    expect(getLore(db, a.id)?.title).toBe("v1");
+  });
+
+  it("--dry-run reports the plan without writing", () => {
+    addLore(db, { title: "existing", summary: "s", body: "B" });
+    exportToDir(db, dir);
+    const fresh = newInMemoryDb();
+    const planned = importFromDir(fresh, dir, { dryRun: true });
+    expect(planned.dryRun).toBe(true);
+    expect(planned.created).toBe(1);
+    // Nothing was actually persisted.
+    expect(
+      fresh.prepare("SELECT COUNT(*) AS n FROM lore").get(),
+    ).toEqual({ n: 0 });
   });
 });

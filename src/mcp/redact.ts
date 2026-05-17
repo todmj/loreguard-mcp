@@ -49,3 +49,21 @@ export function shouldGateRestrictedGet(
   if (!lore.restricted) return false;
   return env["LOREGUARD_ALLOW_RESTRICTED_MCP"] !== "1";
 }
+
+/**
+ * Strip the `possibleConflicts` field from each search hit before it
+ * leaves the MCP boundary. The conflict heuristic (shared repo + tag)
+ * is useful for human triage in `loreguard search`, but surfacing it to
+ * an LLM agent tends to cost more tokens (the agent treats the hint as
+ * authoritative and tries to "resolve" the alleged conflict) than the
+ * heuristic earns. The field is removed wholesale rather than
+ * downgraded so a curious agent can't infer its existence either.
+ *
+ * Exported separately so a unit test can pin the contract without
+ * spinning the stdio server.
+ */
+export function stripPossibleConflicts<
+  T extends { readonly possibleConflicts?: ReadonlyArray<string> },
+>(hits: ReadonlyArray<T>): Array<Omit<T, "possibleConflicts">> {
+  return hits.map(({ possibleConflicts: _ignored, ...rest }) => rest);
+}

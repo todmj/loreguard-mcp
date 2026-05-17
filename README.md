@@ -87,11 +87,40 @@ loreguard demo --clean       # removes only records tagged 'demo'
 `--force`; `--clean` only deletes demo-tagged rows, so it won't touch
 real content.
 
-## Onboarding a repo: `loreguard induct`
+## Onboard a repo
 
-`loreguard demo` shows the *workflow*; `loreguard induct` helps you generate
-*real* starting lore for a specific repo. It's a short interactive
-interview — 10 high-signal questions about the things agents tend to
+The demo above ran against a synthetic dataset. Here's the flow for
+pointing loreguard at a **real** codebase so agents actually have
+useful local memory the next time they touch it:
+
+```bash
+cd ~/code/payments-svc
+
+# 1. Cold-start: 10-question interview that turns answers into DRAFT lore.
+loreguard induct                  # use --short for the 5-question version
+
+# 2. Triage the drafts you just created.
+loreguard review                  # [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit
+
+# 3. Teach the agent to actually call search_lore.
+loreguard print-claude-instructions >> CLAUDE.md
+
+# 4. (Optional) Commit team lore via PR review.
+loreguard sync export .loreguard
+git add .loreguard && git commit -m "seed loreguard"
+```
+
+Steps 1–2 are the human-driven cold-start: you answer questions, then
+promote the keepers. Step 3 wires the agent so it queries lore on the
+next prompt — without this, the MCP server is installed but unused.
+Step 4 is optional and only matters if you want teammates to pick up
+the same records via `loreguard sync import .loreguard`.
+
+The rest of this section is the detail on each step.
+
+### Step 1 — `loreguard induct` (cold-start interview)
+
+`induct` asks 10 high-signal questions about the things agents tend to
 get wrong on a codebase they've never seen:
 
 - dangerous areas to edit without context;
@@ -105,11 +134,12 @@ get wrong on a codebase they've never seen:
 - failure modes from past incidents;
 - what a new contributor should ask first.
 
+Flag variants:
+
 ```bash
-cd ~/code/payments-svc
 loreguard induct                  # autodetects repo name from git remote
 loreguard induct --short          # 5 highest-signal questions instead of 10
-loreguard induct --repo my-svc    # set the repo explicitly (repeatable)
+loreguard induct --repo my-svc    # override the auto-detected name (repeatable)
 ```
 
 `--short` covers dangerous areas, in-flight migrations, invariants,
@@ -119,15 +149,55 @@ full set the first time.
 
 Every non-blank answer becomes a **DRAFT** record tagged `induction`
 with a 90-day `reviewAfter`. Sourced answers go in as `confidence:
-medium`; unsourced as `low`. Promote what's worth keeping via
-`loreguard review` — same triage queue agents' suggestions flow through.
-Skip a question with a blank line; quit early by typing `q` (drafts
-already saved are preserved).
+medium`; unsourced as `low`. Skip a question with a blank line; quit
+early by typing `q` (drafts already saved are preserved).
 
 This is the opposite of "scan repo and invent memory" — it's a
 human-driven cold-start. Aim answers at non-obvious, high-consequence
-knowledge (see [What deserves lore?](#what-deserves-lore) above);
+knowledge (see [What deserves lore?](#what-deserves-lore) below);
 "we use TypeScript" goes in `CLAUDE.md`, not here.
+
+### Step 2 — `loreguard review` (triage drafts)
+
+Drafts are hidden from default search until a human promotes them.
+`loreguard review` walks the queue one record at a time with
+[a]pprove / [r]eject / [e]dit / [s]kip / [q]uit keystrokes. The same
+queue catches both your induction drafts and any drafts agents
+suggest later via `suggest_lore` — single triage point, no separate
+"agent inbox" to babysit.
+
+For scripted use: `loreguard approve <id>` and `loreguard reject <id>`.
+For a quick non-interactive list: `loreguard review --list`.
+
+### Step 3 — wire the agent
+
+Installing the MCP server only exposes the tools; agents won't
+actually call `search_lore` until your CLAUDE.md (or Cursor rules /
+agent skill) tells them when to. `loreguard print-claude-instructions`
+prints a copy-pasteable retrieval rule — append it to whichever file
+your agent reads at session start:
+
+```bash
+loreguard print-claude-instructions >> CLAUDE.md
+```
+
+See [Tell your agent when to use lore](#tell-your-agent-when-to-use-lore)
+for the full rule and the rationale.
+
+### Step 4 — (optional) team sync via `.loreguard/`
+
+If you want teammates to share the same lore, commit it to the repo:
+
+```bash
+loreguard sync export .loreguard
+git add .loreguard && git commit -m "seed loreguard"
+```
+
+Teammates run `loreguard sync import .loreguard` to pull it back into
+their local SQLite. The PR review is the trust gate — see
+[Team sync — Markdown round-trip](#team-sync--markdown-round-trip)
+for the full semantics (safe-upsert, `--force`, `--dry-run`, and
+what's excluded by default).
 
 > **What not to store**
 >
@@ -290,7 +360,7 @@ result.)
 
 Claude sees three tools:
 
-- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes; results carry `possibleConflicts: string[]` when two active records share repo + tag — an overlap heuristic, not contradiction detection)
+- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
 - `get_lore({ id })` — full body of one record
 - `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
 
@@ -386,15 +456,18 @@ profiles.
 
 `loreguard sync export <dir>` writes one `.md` file per record into `<dir>`
 (typically `.loreguard/` in the repo). `loreguard sync import <dir>` is the
-inverse — every file is upserted by id. Combined with normal git
-workflow, the PR review *is* the trust gate: a record in `.loreguard/` got
-there through code review.
+inverse — new and updated `.md` files are merged back in by id, but a
+strictly newer local record is never silently clobbered. Combined with
+normal git workflow, the PR review *is* the trust gate: a record in
+`.loreguard/` got there through code review.
 
 ```bash
 loreguard sync export .loreguard               # active + non-restricted by default
 loreguard sync export .loreguard --include-deprecated --include-superseded
 loreguard sync export .loreguard --clean       # remove stale <id>.md files first
-loreguard sync import .loreguard               # upsert every .md back into SQLite
+loreguard sync import .loreguard               # safe-import: skips local records that are newer
+loreguard sync import .loreguard --force        # overwrite local records even when newer
+loreguard sync import .loreguard --dry-run      # preview what would change
 loreguard sync import .loreguard --include-restricted
 ```
 
@@ -423,10 +496,13 @@ A few things `loreguard sync` deliberately does **not** do:
   files for records being exported, but does not remove `.md` files
   that have no corresponding record. Pass `--clean` if you want a
   deterministic mirror; otherwise, clear the directory first.
-- **`loreguard sync import` is upsert-only.** It creates new records and
-  updates existing ones by id. It does **not** delete local records
-  that are absent from the directory. If your team has removed a
-  record from `.loreguard/`, use `loreguard delete <id>` locally as well.
+- **`loreguard sync import` is safe-upsert.** It creates new records and
+  updates existing ones by id, but does **not** overwrite a local
+  record whose `updatedAt` is strictly newer than the incoming file's
+  — pass `--force` to override. It does **not** delete local records
+  that are absent from the directory either; if your team has removed
+  a record from `.loreguard/`, use `loreguard delete <id>` locally as
+  well. Use `--dry-run` to preview the import plan before writing.
 - **The frontmatter parser is intentionally small** — flat scalars,
   ISO dates, booleans, and string arrays only. Treat the generated
   format as canonical; if you hand-edit a `.md`, keep the structure
@@ -470,7 +546,7 @@ See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-F
 Short version:
 
 - The server uses stdio transport only. No network listener, ever.
-- The `loreguard` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `lore` does not import or configure them. No telemetry or analytics SDKs.
+- The `loreguard` application code uses stdio transport only and makes no outbound HTTP calls. The MCP SDK dependency includes unused HTTP/client modules; `loreguard` does not import or configure them. No telemetry or analytics SDKs.
 - The DB file is local, mode 0600, in your home directory.
 - Audit log at `~/.loreguard/audit.jsonl`: every **MCP tool call** timestamped (with request args and result IDs, never result bodies). CLI mutations are recorded separately in the SQLite `events` table (`created`, `suggested`, `approved`, `deprecated`, `superseded`, `verified`, `updated`, `deleted`) keyed by lore id.
 
