@@ -1247,6 +1247,17 @@ function hasIntersection(
  * Split on whitespace, drop empties, quote each term — stops users
  * accidentally tripping FTS operators (NEAR, OR, AND, ", :, etc.).
  *
+ * **OR-mode, ranked by bm25.** FTS5 defaults to AND across tokens, which
+ * makes multi-word queries brittle (real dogfood: 5 queries against a
+ * fresh corpus returned 0 hits because no record contained EVERY token).
+ * We join with explicit `OR` so a query of N tokens surfaces records
+ * matching any subset; bm25 ranking then puts records matching MORE
+ * tokens (and matching them in higher-weighted columns — see column
+ * weights at search-site `bm25(lore_fts, 3.0, 2.0, 1.0)`) at the top.
+ * Net behaviour: "deployment kafka" surfaces Kafka-only records when
+ * nothing matches both, but Kafka-and-deployment records (if any
+ * existed) would still rank first.
+ *
  * When `prefix` is true, every quoted token of length ≥ 3 is suffixed
  * with `*` so it matches as a prefix ("timez" → "timezone"). Tokens
  * shorter than 3 chars stay exact-match because a 1–2 char prefix is
@@ -1258,9 +1269,13 @@ function toFtsQuery(input: string, prefix: boolean): string {
     .map((p) => p.replace(/"/g, ""))
     .filter(Boolean);
   if (parts.length === 0) return '""';
-  return parts
-    .map((p) => (prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`))
-    .join(" ");
+  const tokens = parts.map((p) =>
+    prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`,
+  );
+  // One token: no operator needed (FTS5 happy with bare quoted term).
+  // Multiple tokens: explicit OR so partial matches surface; bm25
+  // does the ranking work.
+  return tokens.length === 1 ? tokens[0]! : tokens.join(" OR ");
 }
 
 export interface PossibleDuplicate extends LoreSummary {

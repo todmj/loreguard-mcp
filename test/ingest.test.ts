@@ -83,6 +83,60 @@ Even though this is an H3, the scope ended at the previous H2 above us.
     const items = parseMarkdownItems(md, { section: "Nonexistent" });
     expect(items).toEqual([]);
   });
+
+  it("H3 section body is bounded by next H1/H2/H3 — not absorbed past the next H2", () => {
+    // Real dogfood bug: AUTHENTICATION.md's "### Logout" section had
+    // body length 3112 because it absorbed everything until EOF —
+    // including the "## Cross-Site Request Forgery" section that
+    // followed. FTS then surfaced phantom matches on tokens that
+    // lived in unrelated sections.
+    const md = `# Auth Doc
+## Sessions
+### Logout
+The logout endpoint revokes the refresh token server-side. Plenty of bytes here to qualify as a real candidate body for the parser.
+
+## Cross-Site Request Forgery
+This section is about XSRF tokens and state-mutating requests. Must NOT be in Logout body.
+Anti-forgery tokens are written as cookies.
+
+### Token rotation
+This is a deeper H3 in a different parent H2. Token rotation is its own concern with substantial content here.
+`;
+    const items = parseMarkdownItems(md);
+    const logout = items.find((i) => i.title === "Logout")!;
+    expect(logout).toBeDefined();
+    expect(logout.body).toContain("revokes the refresh token");
+    // Words that ONLY exist in the H2 section after Logout. If the
+    // parser absorbed the H2 body, these would leak in.
+    expect(logout.body).not.toContain("XSRF");
+    expect(logout.body).not.toContain("Anti-forgery");
+    expect(logout.body).not.toContain("Token rotation");
+  });
+
+  it("H4+ stays inside its parent H3 section (sub-headings don't fragment)", () => {
+    const md = `### Section A
+intro to A. Plenty long enough to qualify on its own without the sub-sections being absorbed.
+
+#### Sub-A1
+sub content one. More long body content to ensure this passes the noise floor.
+
+#### Sub-A2
+sub content two. More long body content to ensure this passes the noise floor as well.
+
+### Section B
+body of B is also long enough to qualify as a real candidate record for the corpus.
+`;
+    const items = parseMarkdownItems(md);
+    expect(items.map((i) => i.title)).toEqual(["Section A", "Section B"]);
+    const a = items[0]!;
+    // H4 sub-headings + their content should all be inside A's body.
+    expect(a.body).toContain("Sub-A1");
+    expect(a.body).toContain("sub content one");
+    expect(a.body).toContain("Sub-A2");
+    expect(a.body).toContain("sub content two");
+    // But not B's content.
+    expect(a.body).not.toContain("body of B");
+  });
 });
 
 describe("parseMarkdownItems — bullet mode", () => {
