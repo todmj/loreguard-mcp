@@ -486,11 +486,15 @@ export async function runMcpServer(): Promise<void> {
         tags: args.tags,
       };
       try {
-        // Defence in depth — the core reportConflict also checks
+        // Defence in depth — the core reportConflict also refuses
         // restricted, but the MCP gate is the env-gated boundary the
-        // user explicitly configured. Mirror the redactRestricted
-        // shape from get_lore so an agent can't tell whether
-        // existingId is restricted vs unknown when the gate is off.
+        // user explicitly configured. Returning the redacted-restricted
+        // shape (matching get_lore) keeps the audit + response surface
+        // consistent for restricted hits. Note: a restricted refusal
+        // is still distinguishable from an unknown id (different
+        // response payload), same as today's get_lore — closing that
+        // oracle would require pre-checking and returning the same
+        // redaction shape for both, which is a separate decision.
         const existing = getLore(db, args.existingId);
         if (existing && existing.restricted &&
             process.env["LOREGUARD_ALLOW_RESTRICTED_MCP"] !== "1") {
