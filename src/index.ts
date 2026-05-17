@@ -17,6 +17,7 @@ export {
   deleteLore,
   deprecateLore,
   getLore,
+  getRejectionReason,
   listDrafts,
   listRecent,
   listRepos,

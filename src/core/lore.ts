@@ -758,6 +758,13 @@ export function rejectLore(
  * (deliberately swallowed — a corrupt event row from an external write
  * is not a caller-actionable error, and we don't want every caller of
  * this helper to wrap it in try/catch for an unreachable case).
+ *
+ * "Most recent" is well-defined because `events.rowid` is
+ * `INTEGER PRIMARY KEY AUTOINCREMENT` (monotonic across the table) and
+ * the standard reject path hard-deletes the lore row before re-suggest
+ * is even possible — so a given id can only carry one `rejected` event
+ * under normal use. The `ORDER BY rowid DESC LIMIT 1` is the
+ * defensive shape for any future workflow that allows id reuse.
  */
 export function getRejectionReason(
   db: Database,
