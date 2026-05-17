@@ -74,6 +74,13 @@ export function renderSummary(s: LoreSummary): string {
           `⚠ possibly conflicts with ${s.possibleConflicts.join(", ")}`,
         )
       : null,
+    s.conflictsWith && s.conflictsWith.length > 0
+      ? colour(
+          c,
+          ansi.magenta,
+          `⚠ counter-claims: ${s.conflictsWith.length}`,
+        )
+      : null,
     s.source ? colour(c, ansi.blue, s.source) : null,
     s.repos.length ? colour(c, ansi.dim, `repos=${s.repos.join(",")}`) : null,
     s.tags.length ? colour(c, ansi.dim, `tags=${s.tags.join(",")}`) : null,
@@ -113,6 +120,11 @@ export function renderFull(l: Lore): string {
   }
   if (l.supersededBy) {
     lines.push(colour(c, ansi.yellow, `superseded by: ${l.supersededBy}`));
+  }
+  if (l.conflictsWith && l.conflictsWith.length > 0) {
+    lines.push(
+      colour(c, ansi.magenta, `conflicts with: ${l.conflictsWith.join(", ")}`),
+    );
   }
   lines.push("");
   lines.push(colour(c, ansi.dim, "summary:"));

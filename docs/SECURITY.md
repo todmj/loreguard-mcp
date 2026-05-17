@@ -10,6 +10,24 @@
 2. **An agent's "suggest_lore" output should not poison the trusted set.**
    Mitigation: agent suggestions land as `status: draft`; default search
    ignores drafts; a human must run `loreguard approve <id>` to promote.
+   Same gate applies to `report_conflict` — counter-records are drafts
+   too, and the original they challenge is **never mutated** by the
+   agent (one-way `conflictsWith` link; the reviewer resolves via the
+   existing approve / supersede / reject lifecycle).
+
+   **`record_absence` is the one MCP tool that, when enabled, lets
+   agents bypass the review gate** — and v0.1 ships it **off by
+   default** because of that. The CLI `loreguard absent record`
+   works unconditionally (humans don't need a gate); MCP-side
+   `record_absence` requires `LOREGUARD_ALLOW_MCP_ABSENCE=1` in the
+   server's environment. Even when enabled the design is defensive:
+   markers are low-stakes ("we checked, no policy here yet"),
+   self-expiring (default 14 days, max 365) so a bad marker ages
+   out, never appear as search results (only as a decoration on a
+   zero-hit response) so they can't masquerade as canonical, and
+   the audit row records only `queryChars`/`reasonChars` — never
+   the text — so the audit log doesn't grow a parallel "what did
+   the agent know" surface.
 3. **Stale knowledge should not silently masquerade as authoritative.**
    Mitigation: records carry `reviewAfter`; search results carry
    `stale: true` when the date has passed; the CLI prints a warning.
@@ -43,6 +61,9 @@ What's NOT in scope:
 | Search excludes by default | `draft`, `deprecated`, `superseded`, `restricted` |
 | `includeRestricted` via MCP | Ignored unless `LOREGUARD_ALLOW_RESTRICTED_MCP=1` is set in the server's environment. CLI is unaffected. |
 | `get_lore` of a restricted id via MCP | Same gate as `includeRestricted`. With the gate off, `get_lore` returns a minimal refusal (`{ id, restricted: true, error: "restricted", hint: "..." }`) — no title, no summary, no body, no source — and audits the blocked attempt with `blocked: "restricted"`. With the gate on, returns the full record. CLI `loreguard show <id>` is unaffected. |
+| `report_conflict` against a restricted id via MCP | **Always refused, regardless of `LOREGUARD_ALLOW_RESTRICTED_MCP`.** Returns `{ error: "restricted", hint: "... use the CLI" }` and audits `blocked: "restricted"`. Restricted records can be revised, but only by a human via `loreguard update` / `loreguard supersede` — agents can read them (when the env gate is on) but cannot draft counter-records against them. |
+| Read tracking (`stats`) | Enabled by default — `searchLore` writes one `read` event per hit, `getLore` writes one per fetch. Both skip when `LOREGUARD_NO_TELEMETRY=1` or `LOREGUARD_AUDIT_OFF=1`. Events stay local in the SQLite `events` table; nothing crosses the network. |
+| Stop-hook review nudge | Opt-in via `loreguard hooks install`. When enabled, fires once per Claude session if pending drafts exist (marker file under `~/.loreguard/hooks/`). Hook code never throws — failures silently log to stderr so a hook bug never blocks Claude stopping. |
 
 ## Audit log
 
@@ -74,16 +95,29 @@ unset) looks like:
 
 Inspect with `loreguard audit --n 50`.
 
-**What the audit log contains:**
+**What the audit log contains** (per-tool sanitisation shape):
 
-- Tool name, timestamp, request arguments (e.g. `query`, `repo`, `tag`),
-  result count, and result IDs.
-- For `suggest_lore`: title, source URL, repos/tags, confidence, plus
-  `summaryChars` / `bodyChars` (lengths only). The result ID.
+- `search_lore` / `get_lore` — request arguments verbatim
+  (`query`, `repo`, `tag`, `id`, etc.), result count, result IDs.
+- `suggest_lore` — title, source URL, repos/tags, confidence, plus
+  `summaryChars` / `bodyChars` (lengths only — never the text). The
+  result ID. Over-cap inputs are audited with
+  `error: "summary_too_long: <provided> > <max>"`.
+- `report_conflict` — `existingId`, `observationChars` only (never
+  the observation text), source URL, repos/tags. Result ID on
+  success; `blocked: "restricted"` on a gated refusal; `error:
+  "<reason>: <message>"` on a refusal (unknown id / non-active /
+  restricted / empty / too long).
+- `record_absence` — `queryChars` and `reasonChars` only (never the
+  query or reason text — queries can carry proprietary domain terms
+  and reasons can describe sensitive gaps), `repo`, `expiresInDays`,
+  result ID.
 
 **What the audit log never contains:**
 
 - Body text of a suggested or updated record.
+- Observation text from `report_conflict`.
+- Query / reason text from `record_absence`.
 - Full content of returned search results — only IDs.
 
 Be aware: search queries and titles themselves can carry sensitive
@@ -93,9 +127,32 @@ see at 14:32?" — but it does mean the log file is itself sensitive.
 Mode `0600` and the home-directory location are the access control.
 
 CLI mutations (`add`, `approve`, `deprecate`, `supersede`, `verify`,
-`update`, `delete`) are NOT recorded in `audit.jsonl`. They go into
-the SQLite `events` table, keyed by lore id, with timestamps and
-event kind. Query with `sqlite3 ~/.loreguard/lore.db 'SELECT * FROM events'`.
+`update`, `delete`, `reject`) are NOT recorded in `audit.jsonl`. They
+go into the SQLite `events` table, keyed by lore id, with timestamps,
+event kind, and an optional JSON `payload`:
+
+| Event kind | Payload | Emitted by |
+|---|---|---|
+| `created` / `imported` / `approved` / `deprecated` / `updated` / `deleted` | null | matching lifecycle command |
+| `superseded` | `{ supersededBy: "<new-id>" }` | `supersedeLore` |
+| `verified` | `{ reviewAfter: "<new-iso-date>" }` | `verifyLore` |
+| `rejected` | `{ reason: "<text>" }` when the reviewer provided one (interactively or via `--reason "..."`); `null` otherwise | `rejectLore` |
+| `conflict_reported` | `{ counterDraftId: "<draft-id>" }`; keyed to the **original** record's id | `reportConflict` |
+| `read` | `{ via: "search" \| "get" }`; keyed to the hit/fetched id | `searchLore` / `getLore` — skipped if `LOREGUARD_NO_TELEMETRY=1` or `LOREGUARD_AUDIT_OFF=1` |
+
+Query with `sqlite3 ~/.loreguard/lore.db 'SELECT * FROM events'`.
+
+**Env knobs (all local; none reach the network):**
+
+| Var | Effect |
+|---|---|
+| `LOREGUARD_AUDIT_OFF=1` | Silence both the MCP audit log AND `read` event tracking. The test suite sets this. |
+| `LOREGUARD_NO_TELEMETRY=1` | Silence `read` event tracking only (audit log still records MCP tool calls). The "I just don't want stats counters" toggle. |
+| `LOREGUARD_ALLOW_RESTRICTED_MCP=1` | Let MCP `search_lore` / `get_lore` see restricted records. Off by default. `report_conflict` is unconditionally blocked on restricted records regardless of this flag — agents can read but not challenge them. |
+| `LOREGUARD_ALLOW_MCP_ABSENCE=1` | Let MCP agents write absence markers via `record_absence`. Off by default — the v0.1 default is "agents surface the gap, humans record via CLI." |
+| `LOREGUARD_DB` | Override the SQLite path (default `~/.loreguard/lore.db`). |
+| `LOREGUARD_AUDIT_LOG` | Override the audit log path (default `~/.loreguard/audit.jsonl`). |
+| `LOREGUARD_REVIEW_NUDGE_EVERY_TIME=1` | (Stop-hook only) nudge every time instead of once per session. |
 
 Disable MCP audit for tests with `LOREGUARD_AUDIT_OFF=1`. Not recommended
 in production.

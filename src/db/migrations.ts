@@ -86,6 +86,47 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    id: "002-conflicts-with",
+    up(db) {
+      // R3+ — team-ratified disagreement primitive. `report_conflict`
+      // creates a DRAFT counter-record whose `conflicts_with` column
+      // points back at the canonical record being challenged. JSON-
+      // encoded id array (or NULL). Decoded into `Lore.conflictsWith`
+      // by rowToLore. Migration is append-only; existing rows stay
+      // NULL (existing semantics unchanged). See ADR-003.
+      db.exec(`
+        ALTER TABLE lore ADD COLUMN conflicts_with TEXT;
+      `);
+    },
+  },
+  {
+    id: "003-absence-markers",
+    up(db) {
+      // Verified-absence: record "we checked, the team has no policy
+      // on this — don't re-search for N days". When search_lore
+      // returns zero hits AND a matching marker is active, the
+      // response includes the marker so the next agent knows it's an
+      // acknowledged gap, not an oversight. Low-stakes, no review
+      // gate, self-expiring — distinct from drafts.
+      db.exec(`
+        CREATE TABLE absence_markers (
+          id            TEXT PRIMARY KEY,
+          -- Normalised at write time: trim → lowercase → split on
+          -- whitespace → sort tokens → join with single space. Two
+          -- queries differing only by word order share a marker.
+          query         TEXT NOT NULL,
+          repo          TEXT,
+          reason        TEXT NOT NULL,
+          recorded_at   TEXT NOT NULL,
+          expires_at    TEXT NOT NULL,
+          recorded_by   TEXT NOT NULL
+        );
+        CREATE INDEX idx_absence_query ON absence_markers(query);
+        CREATE INDEX idx_absence_expires ON absence_markers(expires_at);
+      `);
+    },
+  },
 ];
 
 /**

@@ -137,11 +137,13 @@ useful local memory the next time they touch it:
 ```bash
 cd ~/code/payments-svc
 
-# 1. Cold-start: 10-question interview that turns answers into DRAFT lore.
-loreguard induct                  # use --short for the 5-question version
+# 1. Cold-start: pick one based on what you have.
+loreguard induct                       # 10-Q interview from scratch
+# - or - if you already have docs:
+loreguard ingest-md ./CLAUDE.md ./docs/adrs/*.md   # one DRAFT per H3 / bullet
 
-# 2. Triage the drafts you just created.
-loreguard review                  # [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit
+# 2. Triage the drafts.
+loreguard review                       # [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit
 
 # 3. Teach the agent to actually call search_lore.
 loreguard print-claude-instructions >> CLAUDE.md
@@ -149,13 +151,20 @@ loreguard print-claude-instructions >> CLAUDE.md
 # 4. (Optional) Commit team lore via PR review.
 loreguard sync export .loreguard
 git add .loreguard && git commit -m "seed loreguard"
+
+# 5. (Optional) Make sure drafts don't rot.
+loreguard hooks install                # opt-in Claude Stop-hook
 ```
 
-Steps 1–2 are the human-driven cold-start: you answer questions, then
-promote the keepers. Step 3 wires the agent so it queries lore on the
-next prompt — without this, the MCP server is installed but unused.
-Step 4 is optional and only matters if you want teammates to pick up
-the same records via `loreguard sync import .loreguard`.
+Step 1 is the cold-start — interview from scratch (`induct`) or
+bulk-import what you already have (`ingest-md`). They're not mutually
+exclusive; many teams do both. Step 2 promotes the keepers. Step 3
+wires the agent so it queries lore on the next prompt — without
+this, the MCP server is installed but unused. Step 4 is optional and
+only matters if you want teammates to pick up the same records via
+`loreguard sync import .loreguard`. Step 5 is opt-in: installs a
+Claude Stop-hook that nudges you to review pending drafts at session
+end so they don't pile up forgotten.
 
 The rest of this section is the detail on each step.
 
@@ -229,6 +238,39 @@ The skill needs the `loreguard-mcp` server already configured (so
 Use the CLI for offline / scripted cold-starts; use the skill when you
 want the agent to do the repo-reading work for you.
 
+#### Bulk-import alternative — `loreguard ingest-md`
+
+If you **already have** the knowledge written down (CLAUDE.md
+sections, ADR files, MIGRATION notes, incident postmortems),
+`induct`/`/loreguard-onboard` are the wrong shape — they ask
+questions you've already answered. `loreguard ingest-md` walks a
+glob, splits each file by H3 subsections or top-level bullets, and
+creates one DRAFT per candidate. Same `loreguard review` queue
+gates everything before it becomes canonical.
+
+```bash
+loreguard ingest-md ./CLAUDE.md --section "Things That Catch People Out"
+loreguard ingest-md ./docs/adrs/*.md --tag decisions
+loreguard ingest-md ./docs/*.md --source https://github.com/org/repo --dry-run
+```
+
+Flags:
+
+- `--section "Heading Text"` — scope to one heading (case-insensitive substring match); content from that heading until the next same-or-higher-level heading
+- `--tag <name>` — extra tag on every drafted record (repeatable; always layered on top of `imported` and `imported-from:<file-basename>`)
+- `--repo <name>` — repo scope (repeatable; falls back to the auto-detected name if omitted)
+- `--source <url>` — base source URL; if it's a GitHub blob URL, the per-record source becomes `<base>#L<sourceLine>` so the reviewer can jump straight to the right line
+- `--dry-run` — print what would be drafted; insert nothing
+
+Splitting is intentionally simple — H3 or bullets, whichever appears
+first in the file. Anything richer (tables, nested formatting, YAML
+frontmatter) is out of scope; hand-edit during review if it matters.
+Items shorter than 30 characters are skipped as noise.
+
+The three cold-start paths aren't mutually exclusive — many teams do
+`ingest-md` to seed bulk material then `induct` (or
+`/loreguard-onboard`) for the things that *aren't* written down yet.
+
 ### Step 2 — `loreguard review` (triage drafts)
 
 Drafts are hidden from default search until a human promotes them.
@@ -238,8 +280,20 @@ queue catches both your induction drafts and any drafts agents
 suggest later via `suggest_lore` — single triage point, no separate
 "agent inbox" to babysit.
 
-For scripted use: `loreguard approve <id>` and `loreguard reject <id>`.
-For a quick non-interactive list: `loreguard review --list`.
+When you reject a draft, the interactive flow prompts for an optional
+**reason** (`Reason? (optional, blank to skip):`). The reason lands
+on the `rejected` event payload, so the agent that suggested it (or
+future-you reading the audit chain) can see *why* the draft was
+dropped instead of re-suggesting the same shape next session. Closes
+the feedback loop without adding a new lifecycle.
+
+For scripted use:
+
+```bash
+loreguard approve <id>
+loreguard reject <id> --reason "wrong scope — convention is per-repo, not org-wide"
+loreguard review --list   # non-interactive overview
+```
 
 ### Step 3 — wire the agent
 
@@ -270,6 +324,44 @@ their local SQLite. The PR review is the trust gate — see
 [Team sync — Markdown round-trip](#team-sync--markdown-round-trip)
 for the full semantics (safe-upsert, `--force`, `--dry-run`, and
 what's excluded by default).
+
+### Step 5 — (optional) session-end nudge so drafts don't rot
+
+The hardest failure mode in any team-memory tool isn't capture —
+it's the queue of unreviewed drafts that quietly accumulates and
+never gets triaged. `loreguard hooks install` wires a Claude Code
+**Stop hook** so when Claude is about to end a session it asks
+"there are N pending drafts from this session — review now or leave
+for later?" once per session.
+
+```bash
+loreguard hooks install                # writes .claude/settings.json (project-scope)
+loreguard hooks install --dry-run      # preview the merge without writing
+```
+
+Behaviour, in plain prose:
+
+- The hook fires on Claude's `Stop` event (session about to end).
+- If there are zero pending drafts: silent pass — Claude stops normally.
+- If there are drafts and **this session hasn't been nudged yet**:
+  emits `{ decision: "block", reason: "There are 2 pending lore
+  drafts from this session. Ask the user if they want to run
+  `loreguard review` now, or leave them for later. Don't review
+  without asking — the user is the gate." }`. Claude surfaces the
+  prompt; you decide.
+- Already nudged this session? Silent pass. No nag loops.
+
+The per-session "already nudged" state is a zero-byte marker file
+under `~/.loreguard/hooks/session-<id>.nudged` (Claude provides
+`session_id` in the hook payload). Set
+`LOREGUARD_REVIEW_NUDGE_EVERY_TIME=1` to nudge every time instead.
+
+The hook is **opt-in** and **project-scoped** — `loreguard hooks
+install` modifies `.claude/settings.json` in the current directory.
+If that file has hooks for other tools, they're preserved (the
+merge is additive and idempotent — running install twice doesn't
+double-add). To turn it off, remove the corresponding `Stop` block
+from `.claude/settings.json`.
 
 > **What not to store**
 >
@@ -430,14 +522,17 @@ claude mcp add loreguard node /absolute/path/to/loreguard-mcp/dist/bin/loreguard
 (Substitute your actual clone path. `claude mcp list` will show the
 result.)
 
-Claude sees three tools:
+Claude sees five tools:
 
-- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
-- `get_lore({ id })` — full body of one record
-- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks)
+- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
+- `get_lore({ id })` — full body of one record.
+- `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Over-cap inputs (`title > 200`, `summary > 800`) return a **structured error** `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` instead of failing through zod's max-cap path — the agent can paste `suggested_cut` back as a corrected retry without a human round-trip. Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits).
+- `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. **Restricted existing records are unconditionally refused** — agents can read restricted records (when `LOREGUARD_ALLOW_RESTRICTED_MCP=1`) but can never draft counter-records against them; surface the concern to the human and let them revise via the CLI. See [`docs/adr/ADR-003-conflict-records-shape.md`](docs/adr/ADR-003-conflict-records-shape.md) for the storage-shape rationale.
+- `record_absence({ query, reason, repo?, expiresInDays? })` — agent searched, found nothing, AND has confirmed the gap is real and durable (not just a phrasing miss). Records a **self-expiring** marker (default 14 days; max 365) so the next `search_lore` on the same normalised query surfaces `absence_marker: { reason, ... }` instead of returning empty again. **MCP access is off by default in v0.1** (`LOREGUARD_ALLOW_MCP_ABSENCE=1` to enable); the CLI `loreguard absent record` always works, so the default flow is "agent surfaces the gap → human records the marker." When enabled: **don't auto-call this on every zero-hit search** — only when the absence is itself the finding. No review gate when MCP writes are enabled (low-stakes, time-bounded — distinct from drafts). Markers are normalised order-independently and case-insensitively so `"payments-svc retry policy"` and `"Retry POLICY payments-svc"` share a marker. Repo-scoped markers shadow global ones when the search is also repo-scoped.
 
-The MCP surface is intentionally narrow. Agents can read and suggest;
-**approval, deprecation, and supersession are CLI-only**.
+The MCP surface is intentionally narrow. Agents can read, suggest,
+challenge, and flag known gaps; **approval, deprecation, and
+supersession are CLI-only**.
 
 ## Tell your agent when to use lore
 
@@ -534,6 +629,17 @@ team's `.loreguard/` directory.
 Override the path with `LOREGUARD_DB=/some/other.db` for tests or alternate
 profiles.
 
+**Environment knobs** (all local-only — none reach the network):
+
+| Var | Effect |
+|---|---|
+| `LOREGUARD_DB` | Override the SQLite path (default `~/.loreguard/lore.db`). |
+| `LOREGUARD_AUDIT_LOG` | Override the audit log path (default `~/.loreguard/audit.jsonl`). |
+| `LOREGUARD_AUDIT_OFF=1` | Silence both the MCP audit log AND `read` event tracking. The test suite sets this. |
+| `LOREGUARD_NO_TELEMETRY=1` | Silence `read` event tracking only (audit log still records MCP tool calls). The "I just don't want stats counters" toggle. |
+| `LOREGUARD_ALLOW_RESTRICTED_MCP=1` | Let MCP `search_lore` / `get_lore` see restricted records. Off by default. `report_conflict` is unconditionally refused on restricted records regardless of this flag — agents can read but not challenge them. |
+| `LOREGUARD_ALLOW_MCP_ABSENCE=1` | Let MCP agents write absence markers via `record_absence`. Off by default in v0.1 — the CLI `loreguard absent record` is the only path until you opt in. Markers are low-stakes (self-expiring, never appear as canonical lore) but this is still an agent-writable retrieval modifier, so v0.1 ships it opt-in. |
+
 ### Team sync — Markdown round-trip
 
 `loreguard sync export <dir>` writes one `.md` file per record into `<dir>`
@@ -593,6 +699,91 @@ A few things `loreguard sync` deliberately does **not** do:
 `loreguard export --json` still exists for one-file JSON backup and
 inspection; `loreguard sync` is for the version-controlled team flow.
 
+### Verified-absence markers
+
+A recurring waste in agent workflows is **re-discovering the same
+nothing across sessions**: agent searches for "payments-svc retry
+policy", gets zero hits, reasons from scratch; next session a
+different agent does the same search, gets the same zero hits,
+reasons from scratch again. There's no record that "we checked here,
+the team has no policy on this — don't re-search for 14 days."
+
+`loreguard absent` records that signal:
+
+```bash
+loreguard absent record "payments-svc retry policy" --reason "team has no policy yet; ad hoc per incident"
+loreguard absent record "auth/sso" --reason "covered by platform's IdP, no app-side policy" --repo payments-svc
+loreguard absent list                       # active markers
+loreguard absent list --include-expired     # everything including aged-out
+```
+
+> **MCP-side `record_absence` is off by default** because it writes
+> retrieval-affecting state without human review. The CLI
+> `loreguard absent record` is the v0.1 default path — agents
+> surface the gap, humans record the marker. To let agents write
+> markers directly, the operator sets `LOREGUARD_ALLOW_MCP_ABSENCE=1`
+> in the MCP server's environment.
+
+When MCP writes are enabled, the companion is `record_absence({ query,
+reason, repo?, expiresInDays? })` — agents call it when they've
+searched, found nothing, *and* are confident the gap is real. After
+that, the next `search_lore` on the same normalised query surfaces
+the marker so the next agent knows it's an acknowledged gap rather
+than an oversight.
+
+**Markers self-expire** (default 14 days, max 365). Stale "we
+checked" claims age out automatically rather than becoming permanent
+dead-end annotations. Once MCP writes are enabled there's no review
+gate (low-stakes, time-bounded, distinct from drafts) — that's the
+whole reason the gate exists at the MCP layer. Query normalisation
+is order-independent and case-insensitive: `"retry policy
+payments-svc"` and `"payments-svc Retry POLICY"` share a marker, but
+`"backoff strategy"` is a separate (deliberately unsynonymised) gap.
+
+### Stats — local read tracking
+
+`loreguard stats` answers "is loreguard earning its keep?" without
+sending anything off-box. Three views, all aggregate-only against
+the existing `events` table (no new schema, no telemetry endpoint):
+
+```bash
+loreguard stats                       # top-cited + retire candidates + recent activity
+loreguard stats --top 20              # broader top-cited list
+loreguard stats --retire              # retirement-candidate list only
+loreguard stats --since-days 30       # window override for top + activity
+loreguard stats --quiet-for-days 90   # window for retire-candidate detection
+loreguard stats --json                # machine-readable output for piping
+```
+
+- **Top-cited records** — sorted by `read` event count in the last
+  N days. A `read` event is emitted by `searchLore` (one per hit)
+  and `getLore` (one per fetch). Records that have been hard-deleted
+  are excluded so phantom counts don't pollute the leaderboard.
+- **Retirement candidates** — active records with **zero reads in the
+  past N days** (default 180). Sort key surfaces the cheapest-to-retire
+  first: no-source records before sourced, ascending confidence (low →
+  medium → high), then oldest `updated_at`.
+- **Recent activity** — event-kind histogram for the window:
+  `suggested / approved / rejected / deprecated / superseded /
+  updated / reads / imports`.
+
+**Local-only by construction.** Read tracking writes to your SQLite
+`events` table on the same machine — *no data leaves the box*. The
+"telemetry" word in the env var name is historical; this is just
+local counters, not outbound telemetry. To turn it off entirely,
+set `LOREGUARD_NO_TELEMETRY=1` (the dedicated off-switch) or the
+broader `LOREGUARD_AUDIT_OFF=1` (which silences both MCP audit and
+read events — the test suite uses this to keep counters clean).
+`loreguard doctor` surfaces whether tracking is on or off so you
+can confirm at a glance.
+
+> Read events record `lore_id` + `kind: 'read'` + `ts` only. Not the
+> query, not the calling agent, not who you are. The audit log
+> (separate, `~/.loreguard/audit.jsonl`) records MCP tool calls and
+> may include search-query text — that's the lever for understanding
+> *what was asked*; `events` is the lever for *which records pulled
+> weight*. Both stay local.
+
 ### Inspect / back up your lore
 
 `loreguard export` writes the DB as a single JSON document so you can read,
@@ -617,6 +808,15 @@ See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/DATA-FLOW.md`](docs/DATA-F
 - Accidental over-sharing (drafts hidden by default; `restricted` excluded by default; both MCP `search_lore` and `get_lore` env-gated for restricted records).
 - Stale or unreviewed memory dominating retrieval (`stale: true` flag; lifecycle filtering; agent suggestions land as drafts).
 - Audit-log leakage of body content (sanitised pre-write; `loreguard audit` renders redacted by default).
+
+> **What the audit log DOES contain** (always local — `~/.loreguard/audit.jsonl`,
+> mode 0600): MCP tool name, search-query text, suggested record's
+> title (not summary or body), `source` URL, length-only counts for
+> larger fields, redacted display in `loreguard audit`. Read tracking
+> (`events` table) is separate and contains lore_id + 'read' + ts
+> only — no query, no agent identity. Disable either via env vars
+> (`LOREGUARD_AUDIT_OFF=1`, `LOREGUARD_NO_TELEMETRY=1`); see [Where
+> data lives](#where-data-lives) for the full knob list.
 
 **`loreguard` does not protect against:**
 
