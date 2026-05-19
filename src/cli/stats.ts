@@ -178,14 +178,24 @@ export function recentActivity(
   };
 }
 
-/** Render the default three-section human report. */
+/**
+ * Render the default three-section human report. Pass the windows used
+ * to compute each section so the header labels can't lie when the
+ * caller overrides the defaults via `--since-days` / `--quiet-for-days`.
+ */
 export function renderStatsReport(
   top: TopCitedRecord[],
   retire: RetireCandidate[],
   activity: RecentActivity,
+  windows: {
+    /** Window used for top-cited + recent activity. */
+    sinceDays: number;
+    /** Window used for retire-candidate quiet-period. */
+    quietForDays: number;
+  } = { sinceDays: 90, quietForDays: 180 },
 ): string {
   const lines: string[] = [];
-  lines.push("Top-cited records (last 90 days):");
+  lines.push(`Top-cited records (last ${windows.sinceDays} days):`);
   if (top.length === 0) {
     lines.push("  (no reads recorded yet — run a search or two)");
   } else {
@@ -195,7 +205,7 @@ export function renderStatsReport(
   }
   lines.push("");
   lines.push(
-    `Retirement candidates (active + no reads in 180 days): ${retire.length}`,
+    `Retirement candidates (active + no reads in ${windows.quietForDays} days): ${retire.length}`,
   );
   for (const r of retire.slice(0, 5)) {
     const lastSeen = r.lastReadAt ? `last read ${r.lastReadAt.slice(0, 10)}` : "never read";
@@ -208,7 +218,7 @@ export function renderStatsReport(
     lines.push(`  ... and ${retire.length - 5} more (run with --retire to see all)`);
   }
   lines.push("");
-  lines.push("Recent activity (last 30 days):");
+  lines.push(`Recent activity (last ${windows.sinceDays} days):`);
   lines.push(
     `  suggested ${activity.suggested}  approved ${activity.approved}  rejected ${activity.rejected}  deprecated ${activity.deprecated}`,
   );
