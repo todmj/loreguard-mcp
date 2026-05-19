@@ -48,6 +48,7 @@ import {
   claudeMdPath,
   type ClaudeMdScope,
   copySkillFile,
+  detectIngestSources,
   findBundledSkillPath,
   skillDestPath,
 } from "./setup.js";
@@ -137,10 +138,13 @@ COMMANDS
   setup [--dry-run] [--force] [--claude-md project|user]
                             One-command bootstrap: register the MCP server
                             with Claude Code, append the retrieval rule to
-                            CLAUDE.md, and install /loreguard-onboard into
-                            ~/.claude/skills/. Idempotent. Use --skip-mcp,
-                            --skip-claude-md, --skip-skill to opt out of
-                            any step individually.
+                            CLAUDE.md, install /loreguard-onboard into
+                            ~/.claude/skills/, and nudge you toward the
+                            right cold-start ingest (detects CLAUDE.md,
+                            AGENTS.md, ADR dirs, top-level docs).
+                            Idempotent. Opt out per step with --skip-mcp,
+                            --skip-claude-md, --skip-skill,
+                            --skip-corpus-nudge.
   demo [--force | --clean]  Seed five illustrative records (tagged 'demo')
                             so you can try list / search / review without
                             authoring content first. Refuses to seed into
@@ -1169,84 +1173,159 @@ async function cmdSetup(args: ReturnType<typeof parseArgs>): Promise<number> {
       `  claude.md scope: ${scope} (${cmPath})\n\n`,
   );
 
-  // [1/3] MCP server
+  // [1/4] MCP server
   if (skipMcp) {
-    process.stdout.write("[1/3] MCP server: skipped (--skip-mcp)\n");
+    process.stdout.write("[1/4] MCP server: skipped (--skip-mcp)\n");
   } else if (dryRun) {
     process.stdout.write(
-      "[1/3] would run: claude mcp add loreguard loreguard-mcp\n",
+      "[1/4] would run: claude mcp add loreguard loreguard-mcp\n",
     );
   } else {
     const r = addMcpServer();
     if (r.action === "registered") {
       process.stdout.write(
-        "[1/3] ✓ registered loreguard MCP server with Claude Code\n",
+        "[1/4] ✓ registered loreguard MCP server with Claude Code\n",
       );
     } else if (r.action === "already-present") {
-      process.stdout.write("[1/3] · MCP server already registered\n");
+      process.stdout.write("[1/4] · MCP server already registered\n");
     } else if (r.action === "claude-cli-missing") {
-      process.stdout.write(`[1/3] ! ${r.detail}\n`);
+      process.stdout.write(`[1/4] ! ${r.detail}\n`);
     } else {
-      process.stdout.write(`[1/3] ! claude mcp add failed: ${r.detail ?? ""}\n`);
+      process.stdout.write(`[1/4] ! claude mcp add failed: ${r.detail ?? ""}\n`);
     }
   }
 
-  // [2/3] CLAUDE.md retrieval rule
+  // [2/4] CLAUDE.md retrieval rule
   if (skipClaudeMd) {
-    process.stdout.write("[2/3] CLAUDE.md retrieval rule: skipped (--skip-claude-md)\n");
+    process.stdout.write("[2/4] CLAUDE.md retrieval rule: skipped (--skip-claude-md)\n");
   } else if (dryRun) {
-    process.stdout.write(`[2/3] would append retrieval rule to ${cmPath}\n`);
+    process.stdout.write(`[2/4] would append retrieval rule to ${cmPath}\n`);
   } else {
     const r = appendInstructionsToFile(cmPath, force);
     if (r.action === "created") {
-      process.stdout.write(`[2/3] ✓ created ${cmPath} with retrieval rule\n`);
+      process.stdout.write(`[2/4] ✓ created ${cmPath} with retrieval rule\n`);
     } else if (r.action === "appended") {
-      process.stdout.write(`[2/3] ✓ appended retrieval rule to ${cmPath}\n`);
+      process.stdout.write(`[2/4] ✓ appended retrieval rule to ${cmPath}\n`);
     } else if (r.action === "replaced") {
-      process.stdout.write(`[2/3] ✓ replaced existing retrieval block in ${cmPath}\n`);
+      process.stdout.write(`[2/4] ✓ replaced existing retrieval block in ${cmPath}\n`);
     } else if (r.action === "already-present") {
-      process.stdout.write(`[2/3] · retrieval rule already present in ${cmPath}\n`);
+      process.stdout.write(`[2/4] · retrieval rule already present in ${cmPath}\n`);
     } else {
       process.stdout.write(
-        `[2/3] ! ${cmPath} has a partial loreguard block (only one marker) — re-run with --force to replace\n`,
+        `[2/4] ! ${cmPath} has a partial loreguard block (only one marker) — re-run with --force to replace\n`,
       );
     }
   }
 
-  // [3/3] /loreguard-onboard skill
+  // [3/4] /loreguard-onboard skill
   if (skipSkill) {
-    process.stdout.write("[3/3] /loreguard-onboard skill: skipped (--skip-skill)\n");
+    process.stdout.write("[3/4] /loreguard-onboard skill: skipped (--skip-skill)\n");
   } else if (dryRun) {
     process.stdout.write(
-      `[3/3] would copy skill to ${skillDestPath()}\n`,
+      `[3/4] would copy skill to ${skillDestPath()}\n`,
     );
   } else {
     try {
       const r = copySkillFile(findBundledSkillPath(), skillDestPath(), force);
       if (r.action === "copied") {
-        process.stdout.write(`[3/3] ✓ installed skill at ${r.dest}\n`);
+        process.stdout.write(`[3/4] ✓ installed skill at ${r.dest}\n`);
       } else if (r.action === "overwritten") {
-        process.stdout.write(`[3/3] ✓ overwrote skill at ${r.dest}\n`);
+        process.stdout.write(`[3/4] ✓ overwrote skill at ${r.dest}\n`);
       } else if (r.action === "already-present") {
-        process.stdout.write(`[3/3] · skill already up to date at ${r.dest}\n`);
+        process.stdout.write(`[3/4] · skill already up to date at ${r.dest}\n`);
       } else {
         process.stdout.write(
-          `[3/3] ! ${r.dest} exists and differs from bundled — re-run with --force to overwrite\n`,
+          `[3/4] ! ${r.dest} exists and differs from bundled — re-run with --force to overwrite\n`,
         );
       }
     } catch (err) {
       process.stdout.write(
-        `[3/3] ! ${err instanceof Error ? err.message : String(err)}\n`,
+        `[3/4] ! ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  // [4/4] cold-start corpus nudge — detect ingestible sources in cwd
+  // and recommend the right next step. The MAIN failure mode of day-1
+  // is: setup succeeds, first Claude session calls search_lore, gets
+  // zero hits, user concludes the tool's broken. The nudge points
+  // them at the skill (Claude's reasoning produces better drafts)
+  // with the CLI as the bulk-mechanical fallback. We don't *run*
+  // ingest here — it requires Claude Code to be active.
+  const skipCorpusNudge = getBool(args.flags, "skip-corpus-nudge");
+  if (skipCorpusNudge) {
+    process.stdout.write("[4/4] cold-start corpus nudge: skipped (--skip-corpus-nudge)\n");
+  } else {
+    const sources = detectIngestSources();
+    const hasAny =
+      !!sources.claudeMd ||
+      sources.adrDirs.length > 0 ||
+      sources.otherDocs.length > 0;
+    process.stdout.write("[4/4] Cold-start corpus:\n");
+    if (dryRun) {
+      if (sources.claudeMd) {
+        process.stdout.write(`  would suggest ingesting ${sources.claudeMd}\n`);
+      }
+      for (const d of sources.adrDirs) {
+        process.stdout.write(`  would suggest ingesting ${d}/*.md\n`);
+      }
+      if (!hasAny) {
+        process.stdout.write("  no sources detected\n");
+      }
+    } else if (hasAny) {
+      if (sources.claudeMd) {
+        process.stdout.write(`  Found ${sources.claudeMd}\n`);
+      }
+      if (sources.adrDirs.length > 0) {
+        process.stdout.write(
+          `  Found ${sources.adrDirs.length} ADR director${sources.adrDirs.length === 1 ? "y" : "ies"}: ${sources.adrDirs.join(", ")}\n`,
+        );
+      }
+      if (sources.otherDocs.length > 0) {
+        process.stdout.write(
+          `  Found ${sources.otherDocs.length} other top-level doc(s): ${sources.otherDocs.map((p) => p.split("/").pop()).join(", ")}\n`,
+        );
+      }
+      const skillInstalled = !skipSkill;
+      process.stdout.write("\n");
+      if (skillInstalled) {
+        process.stdout.write(
+          "  Recommended (uses Claude's reasoning to triage what's worth capturing):\n" +
+            "    Open Claude Code in this repo, run /loreguard-onboard\n" +
+            "    The skill reads these files and creates well-shaped drafts\n" +
+            "    with source citations. Trust gate is unchanged — drafts\n" +
+            "    land in `loreguard review`.\n\n" +
+            "  Mechanical alternative (CLI, dump-then-prune):\n",
+        );
+      } else {
+        process.stdout.write(
+          "  The /loreguard-onboard skill wasn't installed (--skip-skill).\n" +
+            "  Cold-start options:\n" +
+            "    loreguard induct      # 10-question interview, no Claude needed\n",
+        );
+      }
+      if (sources.claudeMd) {
+        process.stdout.write(
+          `    loreguard ingest-md ${sources.claudeMd} --section "..."\n`,
+        );
+      }
+      for (const d of sources.adrDirs) {
+        process.stdout.write(
+          `    loreguard ingest-md ${d}/*.md --tag decisions\n`,
+        );
+      }
+    } else {
+      process.stdout.write(
+        "  No CLAUDE.md / ADRs / docs detected.\n" +
+          "  Bootstrap manually:\n" +
+          "    loreguard induct      # 10-question interview\n" +
+          "    /loreguard-onboard    # in Claude Code: repo-aware interview\n",
       );
     }
   }
 
   process.stdout.write(
-    "\nDone. Next:\n" +
-      "  loreguard init        # if you haven't already\n" +
-      "  loreguard demo        # try the workflow with sample records\n" +
-      "  loreguard induct      # cold-start interview on a real repo\n" +
-      "                        # or, in Claude Code: /loreguard-onboard\n",
+    "\nDone. After your first ingest, run `loreguard list` to see your drafts.\n",
   );
   return 0;
 }
@@ -1439,8 +1518,13 @@ async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
 }
 
 async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
-  const { recentActivity, renderStatsReport, retireCandidates, topCitedRecords } =
-    await import("./stats.js");
+  const {
+    evidenceForRecord,
+    recentActivity,
+    renderStatsReport,
+    retireCandidates,
+    topCitedRecords,
+  } = await import("./stats.js");
   // Numeric flags: refuse non-integer input early rather than passing
   // NaN through to better-sqlite3 (which raises an unhelpful "datatype
   // mismatch" deep in the call stack).
@@ -1464,6 +1548,9 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
   if (quietForDays === null) return 2;
   const wantsJson = getBool(args.flags, "json");
   const retireOnly = getBool(args.flags, "retire");
+  const wantsEvidence = getBool(args.flags, "evidence");
+  const evidenceLimit = parseInt1("evidence-top", 5);
+  if (evidenceLimit === null) return 2;
   const db = openDb();
   try {
     const retire = retireCandidates(db, { quietForDays });
@@ -1487,16 +1574,73 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
     const cited = topCitedRecords(db, { sinceDays, limit: top });
     const activity = recentActivity(db, { days: sinceDays });
+    // --evidence: pull the actual audit queries that hit each top-cited
+    // record. Streamed; safe on large audit logs. Answers "is loreguard
+    // earning its keep?" concretely — each top-cited record gets its
+    // citation count broken down by the queries that produced it.
+    let evidence: Array<{
+      id: string;
+      rows: Array<{ query: string; tool: string; count: number }>;
+      truncated: number;
+    }> = [];
+    if (wantsEvidence) {
+      const auditPath =
+        process.env["LOREGUARD_AUDIT_LOG"] ??
+        join(homedir(), ".loreguard", "audit.jsonl");
+      for (const c of cited) {
+        const { rows, truncated } = await evidenceForRecord(auditPath, c.id, {
+          sinceDays,
+          limit: evidenceLimit,
+        });
+        evidence.push({ id: c.id, rows, truncated });
+      }
+    }
     if (wantsJson) {
-      process.stdout.write(
-        JSON.stringify(
-          { topCited: cited, retireCandidates: retire, recentActivity: activity },
-          null,
-          2,
-        ) + "\n",
-      );
+      const payload: Record<string, unknown> = {
+        topCited: cited,
+        retireCandidates: retire,
+        recentActivity: activity,
+      };
+      if (wantsEvidence) {
+        const byId = new Map(evidence.map((e) => [e.id, e]));
+        payload["topCited"] = cited.map((c) => ({
+          ...c,
+          evidence: byId.get(c.id)?.rows ?? [],
+          evidenceTruncated: byId.get(c.id)?.truncated ?? 0,
+        }));
+      }
+      process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     } else {
-      process.stdout.write(renderStatsReport(cited, retire, activity) + "\n");
+      process.stdout.write(
+        renderStatsReport(cited, retire, activity, { sinceDays, quietForDays }) +
+          "\n",
+      );
+      if (wantsEvidence && cited.length > 0) {
+        process.stdout.write("\nEvidence (queries that hit each top record):\n");
+        const byId = new Map(evidence.map((e) => [e.id, e]));
+        for (const c of cited) {
+          const e = byId.get(c.id);
+          process.stdout.write(`\n  ${c.id}  ${c.title}\n`);
+          if (!e || e.rows.length === 0) {
+            process.stdout.write(
+              "    (no recorded queries in audit log — reads may pre-date\n" +
+                "     read-tracking, or LOREGUARD_NO_TELEMETRY may be set)\n",
+            );
+            continue;
+          }
+          for (const r of e.rows) {
+            const via = r.tool === "get_lore" ? " (get_lore)" : "";
+            process.stdout.write(
+              `    ${String(r.count).padStart(4)}× "${r.query}"${via}\n`,
+            );
+          }
+          if (e.truncated > 0) {
+            process.stdout.write(
+              `         + ${e.truncated} other quer${e.truncated === 1 ? "y" : "ies"}\n`,
+            );
+          }
+        }
+      }
     }
     return 0;
   } finally {

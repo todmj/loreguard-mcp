@@ -14,6 +14,7 @@ import {
 } from "../core/lore.js";
 import { openDb } from "../db/index.js";
 import {
+  buildSearchResponseBody,
   redactRestricted,
   shouldGateRestrictedGet,
   stripPossibleConflicts,
@@ -55,16 +56,34 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Search team lore",
       description:
-        "Search the local lore database for relevant team conventions, " +
-        "decisions, and gotchas. Returns BRIEF summaries (no body). Call " +
-        "get_lore({ id }) afterwards if you need the full body. Designed " +
-        "for token efficiency — prefer this over re-reading source.\n\n" +
-        "Default behaviour: returns only 'active' records, excludes drafts " +
-        "and deprecated/superseded items. Results include `stale: true` " +
-        "when the record's review date has passed; treat stale results as " +
-        "starting points rather than authority.\n\n" +
-        "Examples of good queries: \"password hashing\", \"date timezone " +
-        "payments-svc\", \"migration style guide\".",
+        "**Call this BEFORE any non-trivial change.** Loreguard is the " +
+        "team's memory of conventions, decisions, gotchas, deprecated " +
+        "patterns, and incident lessons. If there's any chance the team " +
+        "has an opinion on what you're about to do, search first. The " +
+        "only changes that don't warrant a search are pure typos / " +
+        "formatting / mechanical renames where the team can't have an " +
+        "opinion. Cost asymmetry favours over-calling: an empty search " +
+        "costs one cheap query; a skipped search lets you repeat a " +
+        "mistake the team already learned from.\n\n" +
+        "**Search broadly, not just by current repo.** If your task " +
+        "touches code that interacts with another service / repo — shared " +
+        "infra, cross-repo APIs, common conventions — search WITHOUT a " +
+        "`repo` filter at least once. Lore records can be tagged for " +
+        "multiple repos (e.g. an org-wide rule), and a too-narrow filter " +
+        "will hide them. If a repo-scoped query returns zero hits, " +
+        "consider retrying without the filter before concluding the team " +
+        "has no position.\n\n" +
+        "Returns BRIEF summaries (no body). Call get_lore({ id }) only " +
+        "when a summary mentions a specific number / threshold / " +
+        "exception you can't act on without the detail. Default: returns " +
+        "only 'active' records; excludes drafts and deprecated/superseded. " +
+        "Results include `stale: true` when the record's review date has " +
+        "passed; treat stale hits as starting points, not authority.\n\n" +
+        "Phrase queries as 'topic + scope' — e.g. \"password hashing\", " +
+        "\"date timezone payments-svc\", \"webhook retry policy\", " +
+        "\"migration style guide\". On a zero-hit response, the server " +
+        "may include an `absence_marker` (an acknowledged team-known gap) " +
+        "or a `next` field coaching your next move.",
       inputSchema: {
         query: z
           .string()
@@ -180,24 +199,20 @@ export async function runMcpServer(): Promise<void> {
             repo: args.repo,
           });
         }
+        // Response shape is built by a pure helper so the three
+        // branches (hits / empty+marker / empty+no-marker+coach) can
+        // be unit-tested without spinning up stdio. See redact.ts for
+        // the contract.
+        const responseBody = buildSearchResponseBody({
+          hits: mcpHits,
+          query: args.query,
+          absenceMarker,
+        });
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                absenceMarker
-                  ? {
-                      results: mcpHits,
-                      absence_marker: {
-                        reason: absenceMarker.reason,
-                        recordedAt: absenceMarker.recordedAt,
-                        expiresAt: absenceMarker.expiresAt,
-                      },
-                    }
-                  : { results: mcpHits },
-                null,
-                2,
-              ),
+              text: JSON.stringify(responseBody, null, 2),
             },
           ],
         };
