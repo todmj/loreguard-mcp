@@ -55,22 +55,27 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Search team lore",
       description:
-        "**Call this BEFORE making any non-trivial code, config, schema, or " +
-        "dependency change.** Specifically: before editing or designing " +
-        "anything touching auth / sessions / permissions, dates / timezones, " +
-        "database migrations, payments / billing, API contracts, deployment " +
-        "/ infra, security policy, cross-repo conventions, or any service " +
-        "or subsystem you haven't already inspected this session. Skipping " +
-        "this step is the most common way agents repeat project-specific " +
-        "mistakes the team has already ruled on.\n\n" +
-        "Returns BRIEF summaries (no body). Call get_lore({ id }) only when " +
-        "a summary mentions a specific number/threshold/exception you can't " +
-        "act on without the detail. Default behaviour: returns only 'active' " +
-        "records, excludes drafts and deprecated/superseded items. Results " +
-        "include `stale: true` when the record's review date has passed; " +
-        "treat stale hits as starting points rather than authority.\n\n" +
-        "Examples of good queries: \"password hashing\", \"date timezone " +
-        "payments-svc\", \"migration style guide\", \"webhook retry policy\".",
+        "**Call this BEFORE any non-trivial change.** Loreguard is the " +
+        "team's memory of conventions, decisions, gotchas, deprecated " +
+        "patterns, and incident lessons. If there's any chance the team " +
+        "has an opinion on what you're about to do, search first. The " +
+        "only changes that don't warrant a search are pure typos / " +
+        "formatting / mechanical renames where the team can't have an " +
+        "opinion. Cost asymmetry favours over-calling: an empty search " +
+        "costs one cheap query and zero tokens spent on body; a skipped " +
+        "search lets you repeat a mistake the team already learned from.\n\n" +
+        "Returns BRIEF summaries (no body). Call get_lore({ id }) only " +
+        "when a summary mentions a specific number / threshold / " +
+        "exception you can't act on without the detail. Default behaviour: " +
+        "returns only 'active' records, excludes drafts and deprecated " +
+        "/ superseded items. Results include `stale: true` when the " +
+        "record's review date has passed; treat stale hits as starting " +
+        "points, not authority.\n\n" +
+        "Phrase the query as 'topic + scope' — e.g. \"password hashing\", " +
+        "\"date timezone payments-svc\", \"webhook retry policy\", " +
+        "\"migration style guide\". A no-hit search is still useful: it " +
+        "tells you the team has no ratified position, which is itself a " +
+        "signal worth carrying forward.",
       inputSchema: {
         query: z
           .string()
