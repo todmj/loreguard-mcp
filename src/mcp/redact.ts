@@ -67,3 +67,64 @@ export function stripPossibleConflicts<
 >(hits: ReadonlyArray<T>): Array<Omit<T, "possibleConflicts">> {
   return hits.map(({ possibleConflicts: _ignored, ...rest }) => rest);
 }
+
+/**
+ * The agent-coaching string shipped on every zero-hit search that has
+ * no active absence_marker. Exposed so the unit test can pin the
+ * contract without re-encoding the prose.
+ *
+ * Three behaviours it nudges, in priority order:
+ *   1. `record_absence` if the team genuinely has no policy
+ *   2. `suggest_lore` at task end if the agent discovers something
+ *   3. Retry without `repo` filter — cross-repo lore can live tagged
+ *      to multiple repos; a too-narrow filter hides it.
+ *
+ * Tone is "instructional, not preachy" — a working colleague's
+ * one-paragraph nudge, not three paragraphs of process.
+ */
+export const SEARCH_NO_HIT_COACH =
+  "No ratified position found. If the gap is real and durable " +
+  "(team has no policy on this), call record_absence so future " +
+  "agents don't re-search. If you discover something durable " +
+  "while completing this task, call suggest_lore at the end. " +
+  "If the query is repo-scoped and the topic could touch other " +
+  "repos, retry search_lore without `repo` to look across all " +
+  "lore (e.g. cross-repo conventions, shared infra rules).";
+
+export interface AbsenceMarkerForResponse {
+  readonly reason: string;
+  readonly recordedAt: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * Pure builder for the `search_lore` response body. Three shapes:
+ *
+ *   - hits present                    → { results }
+ *   - empty + active marker matched   → { results, absence_marker }
+ *   - empty + no marker + has query   → { results, next }
+ *   - empty + no marker + no query    → { results } (blank list-recent
+ *                                                    has no useful coach)
+ *
+ * Exported so a unit test can pin the contract without spinning up the
+ * stdio server.
+ */
+export function buildSearchResponseBody<T>(opts: {
+  hits: ReadonlyArray<T>;
+  query: string | undefined;
+  absenceMarker: AbsenceMarkerForResponse | null;
+}): Record<string, unknown> {
+  const base: Record<string, unknown> = { results: opts.hits };
+  if (opts.absenceMarker) {
+    base["absence_marker"] = {
+      reason: opts.absenceMarker.reason,
+      recordedAt: opts.absenceMarker.recordedAt,
+      expiresAt: opts.absenceMarker.expiresAt,
+    };
+    return base;
+  }
+  if (opts.hits.length === 0 && opts.query) {
+    base["next"] = SEARCH_NO_HIT_COACH;
+  }
+  return base;
+}
