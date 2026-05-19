@@ -55,16 +55,22 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Search team lore",
       description:
-        "Search the local lore database for relevant team conventions, " +
-        "decisions, and gotchas. Returns BRIEF summaries (no body). Call " +
-        "get_lore({ id }) afterwards if you need the full body. Designed " +
-        "for token efficiency — prefer this over re-reading source.\n\n" +
-        "Default behaviour: returns only 'active' records, excludes drafts " +
-        "and deprecated/superseded items. Results include `stale: true` " +
-        "when the record's review date has passed; treat stale results as " +
-        "starting points rather than authority.\n\n" +
+        "**Call this BEFORE making any non-trivial code, config, schema, or " +
+        "dependency change.** Specifically: before editing or designing " +
+        "anything touching auth / sessions / permissions, dates / timezones, " +
+        "database migrations, payments / billing, API contracts, deployment " +
+        "/ infra, security policy, cross-repo conventions, or any service " +
+        "or subsystem you haven't already inspected this session. Skipping " +
+        "this step is the most common way agents repeat project-specific " +
+        "mistakes the team has already ruled on.\n\n" +
+        "Returns BRIEF summaries (no body). Call get_lore({ id }) only when " +
+        "a summary mentions a specific number/threshold/exception you can't " +
+        "act on without the detail. Default behaviour: returns only 'active' " +
+        "records, excludes drafts and deprecated/superseded items. Results " +
+        "include `stale: true` when the record's review date has passed; " +
+        "treat stale hits as starting points rather than authority.\n\n" +
         "Examples of good queries: \"password hashing\", \"date timezone " +
-        "payments-svc\", \"migration style guide\".",
+        "payments-svc\", \"migration style guide\", \"webhook retry policy\".",
       inputSchema: {
         query: z
           .string()
@@ -222,9 +228,14 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Fetch one lore record (full body)",
       description:
-        "Return the full record for a lore id (including the body, which " +
-        "search_lore omits). Use this AFTER a search to spend tokens on a " +
-        "specific note's detail. Returns null when no record matches.",
+        "**Call this when a search_lore summary isn't enough to act on** — " +
+        "typically when the summary references a specific value / threshold " +
+        "/ exception, says 'see body for...', or you need the rationale " +
+        "behind the rule to apply it correctly. Don't call get_lore on " +
+        "every search hit; the summary is designed to stand alone for the " +
+        "common case. Pulling the full body for an obvious rule wastes " +
+        "tokens.\n\n" +
+        "Returns null when no record matches the id.",
       inputSchema: {
         id: z
           .string()
@@ -294,15 +305,28 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Suggest a new lore record (draft)",
       description:
-        "Record something you've learned during this session so future " +
-        "sessions can retrieve it. The record is created as a DRAFT — " +
-        "invisible to default search until a human runs `loreguard approve " +
-        "<id>`. This is the poisoning-prevention guard: agents can " +
-        "suggest knowledge, but humans decide what becomes canonical.\n\n" +
-        "Use this for genuinely durable observations: team conventions " +
-        "you've inferred, gotchas you've hit, cross-repo rules you've " +
-        "discovered. NOT for transient debug notes or task-specific " +
-        "context — that belongs in the chat, not the long-term memory.",
+        "**Call this at the END of a task IF you discovered a durable, " +
+        "project-specific finding that future agents would have benefited " +
+        "from knowing at the start.** Concrete triggers: (1) a convention " +
+        "that isn't obvious from code (naming, timezone handling, auth, " +
+        "permissions, data modelling); (2) a gotcha that wasted time in " +
+        "this session and is likely to bite again; (3) a deprecated " +
+        "pattern you spotted and steered away from; (4) a migration " +
+        "constraint or in-flight transition; (5) an incident lesson; " +
+        "(6) a cross-repo rule you inferred from multiple touch points.\n\n" +
+        "Do NOT call for: TypeScript/language syntax, generic programming " +
+        "advice, transient task state, file paths you happened to read, " +
+        "or anything you're not at least 80% confident the next agent " +
+        "should know. Rough rule: would a future teammate, six months " +
+        "from now, thank you for capturing this? If unsure, skip — the " +
+        "cost of a missing record is one re-search; the cost of a noisy " +
+        "record is reviewer fatigue.\n\n" +
+        "Lands as a DRAFT (invisible to default search until a human " +
+        "approves via `loreguard review`). The response includes any " +
+        "near-duplicate records you should be aware of in `possibleDuplicates` " +
+        "— if a hit looks like the same rule, your suggestion is probably " +
+        "redundant; consider not calling at all, or call with a sharper " +
+        "title that complements rather than duplicates.",
       inputSchema: {
         // Length caps live in the handler, not the schema. zod's max-cap
         // path produced "body is undefined" upstream when an over-cap
@@ -495,17 +519,23 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Report a conflict against a canonical lore record",
       description:
-        "Use when you've found code (or another authoritative source) " +
-        "that contradicts an existing ACTIVE lore record. Creates a DRAFT " +
-        "counter-record linked back to the original via `conflictsWith` — " +
-        "it lands in `loreguard review` for the human to triage. The " +
-        "original record is NEVER mutated; the link is one-way. Resolution " +
-        "is the reviewer's call (approve the counter-claim → use " +
-        "`loreguard supersede` or `loreguard update` to fix the original; " +
-        "reject → the original stands).\n\n" +
+        "**Call this when a search_lore hit contradicts what the code (or " +
+        "another authoritative source) actually does right now.** Concrete " +
+        "triggers: lore says 'use requireSession()' but the codebase only " +
+        "uses the legacy middleware; lore says 'all timestamps UTC' but you " +
+        "found a callsite storing local time; lore says 'feature flags " +
+        "preferred' but you found long-lived feature branches being merged. " +
+        "If you spot this and stay silent, the lore stays wrong and the " +
+        "next agent inherits it.\n\n" +
+        "Creates a DRAFT counter-record linked back to the original via " +
+        "`conflictsWith` — it lands in `loreguard review` for the human " +
+        "to triage. The original record is NEVER mutated; the link is " +
+        "one-way. Resolution is the reviewer's call (approve the counter-" +
+        "claim → `loreguard supersede` or `loreguard update` to fix the " +
+        "original; reject → the original stands).\n\n" +
         "Distinct from the runtime `possibleConflicts` heuristic on search " +
         "results — that's shared-scope overlap detection. This is explicit, " +
-        "persisted, agent-flagged disagreement.",
+        "persisted, evidence-backed disagreement.",
       inputSchema: {
         existingId: z
           .string()
@@ -654,14 +684,23 @@ export async function runMcpServer(): Promise<void> {
     {
       title: "Record a verified-absence marker (no lore on this topic)",
       description:
-        "Use when you've searched for a topic, found nothing, AND you've " +
-        "confirmed the gap is real and durable (not just a phrasing miss). " +
-        "Creates a self-expiring marker that future search_lore calls " +
-        "on the same normalised query will surface as 'reason: ...' " +
-        "alongside an empty results array — so the next agent knows " +
-        "it's an acknowledged gap rather than re-discovering nothing.\n\n" +
-        "Don't use this on every zero-hit search — that would pollute " +
-        "the marker pool. Use it when the absence is itself a finding.",
+        "**Call this only when ALL THREE are true:** (1) you searched, " +
+        "(2) you got zero hits, AND (3) you've confirmed the gap is real " +
+        "and durable — i.e. the team genuinely has no policy on this " +
+        "topic, you're not just one re-phrasing away from a hit, and " +
+        "you'd expect the gap to still be there in a month. The strict " +
+        "trigger is intentional: default to NOT calling unless the " +
+        "absence is itself a finding worth recording.\n\n" +
+        "Cheap to be wrong (markers self-expire — default 14 days, max " +
+        "365); cheap to omit (next agent just re-searches). Future " +
+        "search_lore calls on the same normalised query (lowercase, " +
+        "sorted tokens) surface the marker as `absence_marker: { reason, " +
+        "expiresAt }` alongside an empty results array, so the next agent " +
+        "knows it's an acknowledged gap rather than re-discovering nothing.\n\n" +
+        "Anti-patterns: do NOT call on every zero-hit search; do NOT call " +
+        "as a substitute for suggest_lore (markers say 'no policy', not " +
+        "'here's a policy'); do NOT chain into a suggest_lore that just " +
+        "re-states the absence.",
       inputSchema: {
         query: z
           .string()
