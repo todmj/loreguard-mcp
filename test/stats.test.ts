@@ -8,6 +8,9 @@
  *     event kind.
  */
 import BetterSqlite3 from "better-sqlite3";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -17,6 +20,7 @@ import {
   suggestLore,
 } from "../src/core/lore.js";
 import {
+  evidenceForRecord,
   recentActivity,
   retireCandidates,
   topCitedRecords,
@@ -241,5 +245,103 @@ describe("recentActivity", () => {
     expect(act.superseded).toBe(0);
     expect(act.updated).toBe(0);
     expect(act.imports).toBe(0);
+  });
+});
+
+describe("evidenceForRecord", () => {
+  let tmpDir: string;
+  let auditPath: string;
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "loreguard-evidence-"));
+    auditPath = join(tmpDir, "audit.jsonl");
+  });
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeAudit(lines: object[]): void {
+    writeFileSync(auditPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  }
+
+  it("groups search_lore queries by exact-text and sorts by count desc", async () => {
+    const recent = new Date().toISOString();
+    writeAudit([
+      { ts: recent, tool: "search_lore", request: { query: "password hashing" }, resultIds: ["abcd2345"] },
+      { ts: recent, tool: "search_lore", request: { query: "password hashing" }, resultIds: ["abcd2345"] },
+      { ts: recent, tool: "search_lore", request: { query: "bcrypt" }, resultIds: ["abcd2345"] },
+      // Different record — ignored
+      { ts: recent, tool: "search_lore", request: { query: "password hashing" }, resultIds: ["zzzz9999"] },
+    ]);
+    const { rows, truncated } = await evidenceForRecord(auditPath, "abcd2345");
+    expect(truncated).toBe(0);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({ query: "password hashing", tool: "search_lore", count: 2 });
+    expect(rows[1]).toEqual({ query: "bcrypt", tool: "search_lore", count: 1 });
+  });
+
+  it("surfaces get_lore as 'direct fetch by id'", async () => {
+    const recent = new Date().toISOString();
+    writeAudit([
+      { ts: recent, tool: "get_lore", request: { id: "abcd2345" }, resultIds: ["abcd2345"] },
+      { ts: recent, tool: "get_lore", request: { id: "abcd2345" }, resultIds: ["abcd2345"] },
+    ]);
+    const { rows } = await evidenceForRecord(auditPath, "abcd2345");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ query: "direct fetch by id", tool: "get_lore", count: 2 });
+  });
+
+  it("respects sinceDays — older entries excluded", async () => {
+    const recent = new Date().toISOString();
+    const old = new Date(Date.now() - 100 * 86_400_000).toISOString();
+    writeAudit([
+      { ts: recent, tool: "search_lore", request: { query: "recent" }, resultIds: ["abcd2345"] },
+      { ts: old, tool: "search_lore", request: { query: "old" }, resultIds: ["abcd2345"] },
+    ]);
+    const { rows } = await evidenceForRecord(auditPath, "abcd2345", { sinceDays: 30 });
+    expect(rows.map((r) => r.query)).toEqual(["recent"]);
+  });
+
+  it("returns empty when the audit log doesn't exist", async () => {
+    const { rows, truncated } = await evidenceForRecord(
+      join(tmpDir, "nope.jsonl"),
+      "abcd2345",
+    );
+    expect(rows).toEqual([]);
+    expect(truncated).toBe(0);
+  });
+
+  it("skips malformed JSON lines without throwing", async () => {
+    const recent = new Date().toISOString();
+    writeFileSync(
+      auditPath,
+      [
+        JSON.stringify({ ts: recent, tool: "search_lore", request: { query: "ok" }, resultIds: ["abcd2345"] }),
+        "not-json-{",
+        JSON.stringify({ ts: recent, tool: "search_lore", request: { query: "also-ok" }, resultIds: ["abcd2345"] }),
+        "",
+      ].join("\n"),
+    );
+    const { rows } = await evidenceForRecord(auditPath, "abcd2345");
+    expect(rows.map((r) => r.query).sort()).toEqual(["also-ok", "ok"]);
+  });
+
+  it("truncates and reports overflow count", async () => {
+    const recent = new Date().toISOString();
+    const lines: object[] = [];
+    for (let i = 0; i < 10; i++) {
+      // Different query each time so we get 10 distinct rows.
+      lines.push({
+        ts: recent,
+        tool: "search_lore",
+        request: { query: `q${i}` },
+        resultIds: ["abcd2345"],
+      });
+    }
+    writeAudit(lines);
+    const { rows, truncated } = await evidenceForRecord(auditPath, "abcd2345", {
+      limit: 3,
+    });
+    expect(rows).toHaveLength(3);
+    expect(truncated).toBe(7);
   });
 });
