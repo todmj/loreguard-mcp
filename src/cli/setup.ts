@@ -12,7 +12,14 @@
  * can be unit-tested without mocking `child_process`.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -243,4 +250,97 @@ export function addMcpServer(): McpAddResult {
       detail: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+// ── Cold-start source detection ───────────────────────────────────────
+
+/**
+ * Result of `detectIngestSources` — paths in the working directory that
+ * would be good candidates for the first ingest. Used by the [4/4] step
+ * of `loreguard setup` to nudge the user at the right next action
+ * (`/loreguard-onboard` for thinking-driven ingest, or `loreguard
+ * ingest-md` for mechanical bulk).
+ */
+export interface IngestSources {
+  /** Path to the first agent-instruction file found (CLAUDE.md /
+   *  AGENTS.md / .claude/CLAUDE.md), if any. */
+  readonly claudeMd?: string;
+  /** Paths to ADR-style directories under `./docs/`. */
+  readonly adrDirs: ReadonlyArray<string>;
+  /** Other top-level *.md files (excluding common non-lore files). */
+  readonly otherDocs: ReadonlyArray<string>;
+}
+
+/**
+ * Files at the repo root that are NOT useful as lore sources, so we
+ * exclude them from `otherDocs` to keep the recommendation focused.
+ * Case-insensitive match against the basename.
+ */
+const NON_LORE_DOC_NAMES = new Set([
+  "readme.md",
+  "license.md",
+  "license",
+  "changelog.md",
+  "contributing.md",
+  "code_of_conduct.md",
+  "security.md",
+  "support.md",
+  "authors.md",
+  "maintainers.md",
+]);
+
+/**
+ * Best-effort, read-only scan of the working directory for files we
+ * could nudge the user toward ingesting. Never reads file contents —
+ * just looks at names — so it's safe to run inside `setup` without
+ * any side effects beyond fs.readdirSync.
+ */
+export function detectIngestSources(cwd?: string): IngestSources {
+  const root = cwd ?? process.cwd();
+  const adrSubdirNames = new Set([
+    "adr",
+    "adrs",
+    "decisions",
+    "architecture",
+    "architectural-decisions",
+  ]);
+  const claudeMdCandidates = [
+    join(root, "CLAUDE.md"),
+    join(root, "AGENTS.md"),
+    join(root, ".claude", "CLAUDE.md"),
+  ];
+  let claudeMd: string | undefined;
+  for (const p of claudeMdCandidates) {
+    if (existsSync(p)) {
+      claudeMd = p;
+      break;
+    }
+  }
+  const adrDirs: string[] = [];
+  const docsRoot = join(root, "docs");
+  if (existsSync(docsRoot)) {
+    try {
+      for (const name of readdirSync(docsRoot)) {
+        if (!adrSubdirNames.has(name.toLowerCase())) continue;
+        const full = join(docsRoot, name);
+        if (statSync(full).isDirectory()) adrDirs.push(full);
+      }
+    } catch {
+      // best-effort — unreadable dirs / permission errors etc.
+    }
+  }
+  const otherDocs: string[] = [];
+  try {
+    for (const name of readdirSync(root)) {
+      if (!name.toLowerCase().endsWith(".md")) continue;
+      if (NON_LORE_DOC_NAMES.has(name.toLowerCase())) continue;
+      // Don't double-count the CLAUDE.md / AGENTS.md hit.
+      const full = join(root, name);
+      if (full === claudeMd) continue;
+      if (statSync(full).isFile()) otherDocs.push(full);
+    }
+  } catch {
+    // best-effort
+  }
+  return { claudeMd, adrDirs, otherDocs };
 }
