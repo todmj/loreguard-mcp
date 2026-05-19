@@ -28,6 +28,7 @@ import {
   BEGIN_MARKER,
   claudeMdPath,
   copySkillFile,
+  detectIngestSources,
   END_MARKER,
   findBundledSkillPath,
   instructionsBlock,
@@ -174,5 +175,78 @@ describe("setup — findBundledSkillPath", () => {
     const p = findBundledSkillPath();
     expect(p.endsWith("/skills/loreguard-onboard/SKILL.md")).toBe(true);
     expect(existsSync(p)).toBe(true);
+  });
+});
+
+describe("setup — detectIngestSources", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "loreguard-detect-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns empty result on a bare directory", () => {
+    const r = detectIngestSources(dir);
+    expect(r.claudeMd).toBeUndefined();
+    expect(r.adrDirs).toEqual([]);
+    expect(r.otherDocs).toEqual([]);
+  });
+
+  it("detects ./CLAUDE.md", () => {
+    writeFileSync(join(dir, "CLAUDE.md"), "# rules\n");
+    const r = detectIngestSources(dir);
+    expect(r.claudeMd).toBe(join(dir, "CLAUDE.md"));
+  });
+
+  it("detects AGENTS.md when CLAUDE.md is absent", () => {
+    writeFileSync(join(dir, "AGENTS.md"), "# rules\n");
+    const r = detectIngestSources(dir);
+    expect(r.claudeMd).toBe(join(dir, "AGENTS.md"));
+  });
+
+  it("prefers CLAUDE.md over AGENTS.md when both are present", () => {
+    writeFileSync(join(dir, "CLAUDE.md"), "# claude rules\n");
+    writeFileSync(join(dir, "AGENTS.md"), "# agents rules\n");
+    const r = detectIngestSources(dir);
+    expect(r.claudeMd).toBe(join(dir, "CLAUDE.md"));
+  });
+
+  it("detects ./docs/adrs/", () => {
+    mkdirSync(join(dir, "docs", "adrs"), { recursive: true });
+    const r = detectIngestSources(dir);
+    expect(r.adrDirs.map((p) => p.replace(dir, ""))).toEqual(["/docs/adrs"]);
+  });
+
+  it("detects multiple ADR-style directory names", () => {
+    mkdirSync(join(dir, "docs", "adr"), { recursive: true });
+    mkdirSync(join(dir, "docs", "decisions"), { recursive: true });
+    mkdirSync(join(dir, "docs", "irrelevant"), { recursive: true });
+    const r = detectIngestSources(dir);
+    const basenames = r.adrDirs.map((p) => p.split("/").pop()).sort();
+    expect(basenames).toEqual(["adr", "decisions"]);
+  });
+
+  it("surfaces other top-level *.md files but excludes README/LICENSE/etc.", () => {
+    writeFileSync(join(dir, "README.md"), "");
+    writeFileSync(join(dir, "LICENSE.md"), "");
+    writeFileSync(join(dir, "CHANGELOG.md"), "");
+    writeFileSync(join(dir, "CONTRIBUTING.md"), "");
+    writeFileSync(join(dir, "ARCHITECTURE.md"), "stuff");
+    writeFileSync(join(dir, "PRINCIPLES.md"), "more stuff");
+    const r = detectIngestSources(dir);
+    const basenames = r.otherDocs.map((p) => p.split("/").pop()).sort();
+    expect(basenames).toEqual(["ARCHITECTURE.md", "PRINCIPLES.md"]);
+  });
+
+  it("does not double-count CLAUDE.md as an other-doc", () => {
+    writeFileSync(join(dir, "CLAUDE.md"), "");
+    writeFileSync(join(dir, "ARCHITECTURE.md"), "");
+    const r = detectIngestSources(dir);
+    expect(r.claudeMd).toBe(join(dir, "CLAUDE.md"));
+    expect(r.otherDocs.map((p) => p.split("/").pop())).toEqual([
+      "ARCHITECTURE.md",
+    ]);
   });
 });

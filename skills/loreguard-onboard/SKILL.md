@@ -95,23 +95,34 @@ will carry it.
 Read these sources, in this order. Stop short of full-file reads when
 you can — skim for signals.
 
-1. **`README.md`** — flag anything mentioning: "deprecated", "DO NOT USE",
+1. **`CLAUDE.md` / `AGENTS.md` / `.claude/CLAUDE.md`** (any of these
+   agent-instruction files): **highest-priority source.** These already
+   contain content the team has hand-curated for agents — sections
+   like "Things That Catch People Out", "Conventions", "Gotchas",
+   "Architectural decisions", "Migrations", and similar are designed
+   for exactly the kind of content loreguard captures. Treat each
+   H2/H3 subsection (or each bullet under such a heading) as a
+   candidate. Your job is to **triage durability** — not just
+   transcribe the file verbatim. If a bullet reads as task-specific or
+   transient, skip it; if it reads as "this is how things are here
+   and will be in six months", capture it.
+2. **`README.md`** — flag anything mentioning: "deprecated", "DO NOT USE",
    "WARNING", "legacy", "see also <ADR>", "incident", architectural
    choices, naming conventions, env vars with surprising defaults.
-2. **`docs/`, `docs/adrs/`, `docs/architecture/`, `ADRs/`, `decisions/`,
+3. **`docs/`, `docs/adrs/`, `docs/architecture/`, `ADRs/`, `decisions/`,
    `.architecture/`** — if any exist, scan titles and final-decision
    sections. ADRs are the cleanest source of "decisions that aren't
    obvious from code".
-3. **`MIGRATIONS.md` / `migrations/` / `db/migrations/`** — in-flight
+4. **`MIGRATIONS.md` / `migrations/` / `db/migrations/`** — in-flight
    migrations are gold for lore. Look for "TODO", recent file dates,
    companion code that handles both old + new schemas.
-4. **Top-level `package.json` / `pyproject.toml` / `go.mod` / `Cargo.toml`** —
+5. **Top-level `package.json` / `pyproject.toml` / `go.mod` / `Cargo.toml`** —
    service name, peer-repo dependencies that suggest cross-repo
    conventions worth capturing.
-5. **`git log --oneline -50`** — recent commit subjects often hint at:
+6. **`git log --oneline -50`** — recent commit subjects often hint at:
    in-flight migrations ("migrate X to Y"), deprecations ("remove
    legacy Z"), incident fixes ("fix INC-NNN: …"), policy decisions.
-6. **Grep for `// DEPRECATED`, `// TODO: remove`, `// WARNING:`, `// HACK:`** —
+7. **Grep for `// DEPRECATED`, `// TODO: remove`, `// WARNING:`, `// HACK:`** —
    these often mark non-obvious project knowledge.
 
 ### Step 3 — surface candidate drafts
