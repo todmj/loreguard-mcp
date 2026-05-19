@@ -1,5 +1,7 @@
 # loreguard
 
+[![ci](https://github.com/tmj-90/loreguard-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tmj-90/loreguard-mcp/actions/workflows/ci.yml)
+
 > **Team-ratified knowledge for AI coding agents.**
 > Memory says *what one session believes*; loreguard says *what the team
 > has reviewed and approved*.
@@ -288,10 +290,11 @@ Hard-rejected regardless of score:
 - `title === summary === body` (collapsed single-line bullet)
 - title contains a date stamp like `(2026-03-24)` (status heading)
 
-Candidates pass at `score >= 0`. The conservative shape means
-concise descriptive lore like *"Customer IDs are tenant-scoped"*
-passes (fact marker), while a UI spec bullet like *"Cards: Suppliers
-Connected: 3/4"* fails (short + no markers).
+Candidates pass at `score >= 1` — a record with no positive markers
+fails regardless of body length. The conservative shape means concise
+descriptive lore like *"Customer IDs are tenant-scoped"* passes (fact
+marker), while a UI spec bullet like *"Cards: Suppliers Connected:
+3/4"* fails (short + no markers).
 
 **Other flags:**
 
