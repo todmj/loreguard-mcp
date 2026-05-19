@@ -14,6 +14,9 @@
  *     window (the dead-weight signal)
  *   - recentActivity — event-kind histogram over a window
  */
+import { createReadStream, existsSync } from "node:fs";
+import { createInterface } from "node:readline";
+
 import type { Database } from "better-sqlite3";
 
 export interface TopCitedRecord {
@@ -175,14 +178,24 @@ export function recentActivity(
   };
 }
 
-/** Render the default three-section human report. */
+/**
+ * Render the default three-section human report. Pass the windows used
+ * to compute each section so the header labels can't lie when the
+ * caller overrides the defaults via `--since-days` / `--quiet-for-days`.
+ */
 export function renderStatsReport(
   top: TopCitedRecord[],
   retire: RetireCandidate[],
   activity: RecentActivity,
+  windows: {
+    /** Window used for top-cited + recent activity. */
+    sinceDays: number;
+    /** Window used for retire-candidate quiet-period. */
+    quietForDays: number;
+  } = { sinceDays: 90, quietForDays: 180 },
 ): string {
   const lines: string[] = [];
-  lines.push("Top-cited records (last 90 days):");
+  lines.push(`Top-cited records (last ${windows.sinceDays} days):`);
   if (top.length === 0) {
     lines.push("  (no reads recorded yet — run a search or two)");
   } else {
@@ -192,7 +205,7 @@ export function renderStatsReport(
   }
   lines.push("");
   lines.push(
-    `Retirement candidates (active + no reads in 180 days): ${retire.length}`,
+    `Retirement candidates (active + no reads in ${windows.quietForDays} days): ${retire.length}`,
   );
   for (const r of retire.slice(0, 5)) {
     const lastSeen = r.lastReadAt ? `last read ${r.lastReadAt.slice(0, 10)}` : "never read";
@@ -205,7 +218,7 @@ export function renderStatsReport(
     lines.push(`  ... and ${retire.length - 5} more (run with --retire to see all)`);
   }
   lines.push("");
-  lines.push("Recent activity (last 30 days):");
+  lines.push(`Recent activity (last ${windows.sinceDays} days):`);
   lines.push(
     `  suggested ${activity.suggested}  approved ${activity.approved}  rejected ${activity.rejected}  deprecated ${activity.deprecated}`,
   );
@@ -213,4 +226,90 @@ export function renderStatsReport(
     `  superseded ${activity.superseded}  updated ${activity.updated}  reads ${activity.reads}  imports ${activity.imports}`,
   );
   return lines.join("\n");
+}
+
+// ── Evidence: which queries actually hit each top-cited record? ──────
+
+/**
+ * One grouped query/count pair from the audit log, attached to a
+ * top-cited record by `evidenceForRecord` and rendered alongside its
+ * citation count. Answers the team's day-20 question: "show me the
+ * actual queries that hit this record".
+ */
+export interface EvidenceRow {
+  /** Either a search query string, or the sentinel "direct fetch by id"
+   *  for `get_lore` calls (which have no query text). */
+  readonly query: string;
+  /** Which MCP tool the audit row came from. */
+  readonly tool: "search_lore" | "get_lore";
+  /** Number of distinct audit rows that resulted in a read of this id. */
+  readonly count: number;
+}
+
+/**
+ * Stream-parse `~/.loreguard/audit.jsonl` and return the queries that
+ * resulted in a read of `recordId` within the last `sinceDays`. Grouped
+ * by (query, tool) and sorted by count desc. Top `limit` returned; the
+ * caller stitches an "N other queries" tail row if there are more.
+ *
+ * Streamed because audit logs can grow large; we read line-by-line so
+ * memory stays bounded.
+ */
+export async function evidenceForRecord(
+  auditPath: string,
+  recordId: string,
+  options: { sinceDays?: number; limit?: number } = {},
+): Promise<{ rows: EvidenceRow[]; truncated: number }> {
+  const sinceDays = options.sinceDays ?? 30;
+  const limit = options.limit ?? 5;
+  const sinceMs = Date.now() - sinceDays * 86_400_000;
+  if (!existsSync(auditPath)) return { rows: [], truncated: 0 };
+
+  // Group key: `${tool}\x00${query}` (NUL-separated; query may be anything).
+  const counts = new Map<string, { row: EvidenceRow; count: number }>();
+  const stream = createReadStream(auditPath, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (line.length === 0) continue;
+    let entry: AuditLine;
+    try {
+      entry = JSON.parse(line) as AuditLine;
+    } catch {
+      continue; // skip malformed rows
+    }
+    if (!entry.ts || Date.parse(entry.ts) < sinceMs) continue;
+    if (!entry.resultIds || !entry.resultIds.includes(recordId)) continue;
+    const tool: EvidenceRow["tool"] | undefined =
+      entry.tool === "search_lore" ? "search_lore" :
+      entry.tool === "get_lore" ? "get_lore" : undefined;
+    if (!tool) continue;
+    let query: string;
+    if (tool === "get_lore") {
+      query = "direct fetch by id";
+    } else if (typeof entry.request?.query === "string" && entry.request.query.length > 0) {
+      query = entry.request.query;
+    } else {
+      query = "(no query — list recent)";
+    }
+    const key = `${tool}\x00${query}`;
+    const existing = counts.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      counts.set(key, { row: { query, tool, count: 0 }, count: 1 });
+    }
+  }
+  const sorted = Array.from(counts.values())
+    .map((v) => ({ ...v.row, count: v.count }))
+    .sort((a, b) => b.count - a.count);
+  const head = sorted.slice(0, limit);
+  const truncated = sorted.length > limit ? sorted.length - limit : 0;
+  return { rows: head, truncated };
+}
+
+interface AuditLine {
+  ts?: string;
+  tool?: string;
+  request?: { query?: unknown };
+  resultIds?: ReadonlyArray<string>;
 }
