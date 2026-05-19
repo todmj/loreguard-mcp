@@ -25,7 +25,7 @@ already decided, rather than reasoning from scratch.
 > (`better-sqlite3`) that's built at install time.
 
 ```bash
-git clone https://github.com/todmj/loreguard-mcp.git
+git clone https://github.com/tmj-90/loreguard-mcp.git
 cd loreguard-mcp
 pnpm install                  # builds the better-sqlite3 native binding too
 pnpm build
