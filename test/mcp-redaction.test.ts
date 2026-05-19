@@ -142,3 +142,72 @@ describe("stripPossibleConflicts", () => {
     expect(original).toEqual(snapshot);
   });
 });
+
+describe("buildSearchResponseBody", () => {
+  it("hits present → only `results` is set", async () => {
+    const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    const r = buildSearchResponseBody({
+      hits: [{ id: "abcd2345", title: "x" }],
+      query: "anything",
+      absenceMarker: null,
+    });
+    expect(r).toEqual({ results: [{ id: "abcd2345", title: "x" }] });
+    expect("next" in r).toBe(false);
+    expect("absence_marker" in r).toBe(false);
+  });
+
+  it("zero hits + active marker → marker wins, no `next` field", async () => {
+    const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    const r = buildSearchResponseBody({
+      hits: [],
+      query: "team retry policy",
+      absenceMarker: {
+        reason: "no policy yet",
+        recordedAt: "2026-05-01T00:00:00Z",
+        expiresAt: "2026-05-31T00:00:00Z",
+      },
+    });
+    expect(r).toEqual({
+      results: [],
+      absence_marker: {
+        reason: "no policy yet",
+        recordedAt: "2026-05-01T00:00:00Z",
+        expiresAt: "2026-05-31T00:00:00Z",
+      },
+    });
+    expect("next" in r).toBe(false);
+  });
+
+  it("zero hits + no marker + query → `next` coach is present", async () => {
+    const { buildSearchResponseBody, SEARCH_NO_HIT_COACH } = await import(
+      "../src/mcp/redact.js"
+    );
+    const r = buildSearchResponseBody({
+      hits: [],
+      query: "obscure thing",
+      absenceMarker: null,
+    });
+    expect(r["results"]).toEqual([]);
+    expect(r["next"]).toBe(SEARCH_NO_HIT_COACH);
+    expect("absence_marker" in r).toBe(false);
+  });
+
+  it("the coach mentions all three behaviours we want to nudge", async () => {
+    const { SEARCH_NO_HIT_COACH } = await import("../src/mcp/redact.js");
+    expect(SEARCH_NO_HIT_COACH).toContain("record_absence");
+    expect(SEARCH_NO_HIT_COACH).toContain("suggest_lore");
+    // Cross-repo retry nudge
+    expect(SEARCH_NO_HIT_COACH).toContain("without `repo`");
+  });
+
+  it("zero hits + no marker + no query → no `next` (blank list-recent has no useful coach)", async () => {
+    const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    const r = buildSearchResponseBody({
+      hits: [],
+      query: undefined,
+      absenceMarker: null,
+    });
+    expect(r).toEqual({ results: [] });
+    expect("next" in r).toBe(false);
+  });
+});
