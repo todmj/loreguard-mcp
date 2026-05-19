@@ -6,14 +6,10 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
-_Nothing here yet._
-
-## [0.2.0] — proposed cut: tag at `main` HEAD
-
-This is the working tag-target for the next release. v0.1.0 is the
-initial public surface; v0.2.0 collects everything shipped since:
-team-ratification primitives, agent-coaching primitives, the
-onboarding and adoption story, and several quality-of-life fixes.
+_Nothing is tagged yet. The first public cut will be **v0.1.0**;
+everything below ships in that release. The initial-scope vs
+added-since split is kept for the changelog reader's benefit, not as
+a version boundary._
 
 ### Added — agent-facing MCP surface
 
@@ -193,13 +189,8 @@ onboarding and adoption story, and several quality-of-life fixes.
   text never leaves the in-memory request; `record_absence` query /
   reason captured as character counts only.
 
-## [0.1.0] — proposed cut: PR #1 merge (`74d2d7c`) or earlier
+### Initial scope (carried into v0.1.0)
 
-The initial public-ready state — trust gate, MCP surface,
-human-approval flow, restricted handling, audit log boundary, FTS
-search, 5-minute demo walkthrough, lifecycle commands.
-
-If you'd like a different split (e.g. cut v0.1.0 at the rename, or
-fold everything into a single 0.2.0), grep `## [Unreleased]` and
-move section headers; the per-feature bullets above stay attached
-to whichever version receives them.
+Trust gate, MCP surface, human-approval flow, restricted handling,
+audit log boundary, FTS search, 5-minute demo walkthrough, lifecycle
+commands.
