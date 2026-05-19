@@ -1611,7 +1611,10 @@ async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
       }
       process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     } else {
-      process.stdout.write(renderStatsReport(cited, retire, activity) + "\n");
+      process.stdout.write(
+        renderStatsReport(cited, retire, activity, { sinceDays, quietForDays }) +
+          "\n",
+      );
       if (wantsEvidence && cited.length > 0) {
         process.stdout.write("\nEvidence (queries that hit each top record):\n");
         const byId = new Map(evidence.map((e) => [e.id, e]));
