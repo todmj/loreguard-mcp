@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
  * from a Crockford-style base32 alphabet (no I/L/O/0/1 → less typo risk
  * when a human reads "open lore record 7vk3qm9b" off a Slack thread).
  *
- * 32^8 = ~1.1e12 keys → collision probability negligible at expected scale.
+ * 30^8 ≈ 6.6e11 keys → collision probability negligible at expected scale.
  */
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
 

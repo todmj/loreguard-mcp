@@ -158,14 +158,14 @@ COMMANDS
                             review window). Drafts only — promote via
                             \`loreguard review\`. Use --repo to override the
                             auto-detected name (repeatable).
-  absent record "<query>" --reason "..." [--repo X] [--expires-days 30]
+  absent record "<query>" --reason "..." [--repo X] [--expires-days 14]
                             Record a verified-absence marker: "we
                             checked, the team has no policy on this".
                             When future search_lore returns zero hits
                             on the same normalised query, the response
                             includes this marker so the agent knows
                             it's an acknowledged gap. Self-expires
-                            (default 30 days).
+                            (default 14 days).
   absent list [--include-expired]
                             List active absence markers (or all of
                             them with --include-expired).

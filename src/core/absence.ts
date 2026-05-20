@@ -5,7 +5,7 @@
  * for now". When `search_lore` returns zero hits AND a matching active
  * marker exists, the response is decorated with the marker so the next
  * agent knows it's an acknowledged gap rather than an oversight. Markers
- * expire (default 30 days) so stale "we checked" claims age out
+ * expire (default 14 days) so stale "we checked" claims age out
  * automatically instead of becoming permanent dead-end annotations.
  *
  * Distinct from drafts. Drafts gate on human review; absence markers are
