@@ -44,7 +44,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "rimraf dist && tsc -p tsconfig.json",
+    "build": "rimraf dist && tsc -p tsconfig.json && chmod +x dist/bin/loreguard.js dist/bin/loreguard-mcp.js",
     "dev:cli": "tsx src/bin/loreguard.ts",
     "dev:mcp": "tsx src/bin/loreguard-mcp.ts",
     "typecheck": "tsc --noEmit",
