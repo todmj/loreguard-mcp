@@ -147,9 +147,10 @@ a version boundary._
 - **Data directory** — `~/.lore/` → `~/.loreguard/`. Env vars
   `LORE_*` → `LOREGUARD_*` (hard rename, no fallback — only the
   initial single-user install existed at the time).
-- **GitHub repo** — `todmj/lore-mcp` → `todmj/loreguard-mcp`. All
-  README install paths, package.json URLs, and JSDoc examples
-  updated.
+- **GitHub repo** — `todmj/lore-mcp` → `tmj-90/loreguard-mcp`
+  (collapses two renames: the package rename and the subsequent
+  GitHub account rename). All README install paths, package.json
+  URLs, and JSDoc examples updated.
 - **Summary cap** — `summary` field bumped from 500 → 800 chars.
   Real-usage feedback: 500 forced a teaser-shaped summary that
   required a follow-up `get_lore` to decide relevance; 800 fits one
