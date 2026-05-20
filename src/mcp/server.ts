@@ -14,9 +14,13 @@ import {
 } from "../core/lore.js";
 import { openDb } from "../db/index.js";
 import {
+  ABSENCE_DISABLED_REFUSAL,
   buildSearchResponseBody,
+  CONFLICT_AGAINST_RESTRICTED_REFUSAL,
   redactRestricted,
+  shouldGateAbsenceWrite,
   shouldGateRestrictedGet,
+  shouldRefuseConflictAgainstRestricted,
   stripPossibleConflicts,
 } from "./redact.js";
 import {
@@ -381,7 +385,6 @@ export async function runMcpServer(): Promise<void> {
               "deploy, conventions, gotchas, incident-lessons.",
           ),
         source: z
-          .string()
           .url()
           .optional()
           .describe(
@@ -563,7 +566,6 @@ export async function runMcpServer(): Promise<void> {
               "additional context. ≤ 800 chars (mirrors suggest_lore.summary).",
           ),
         source: z
-          .string()
           .url()
           .optional()
           .describe(
@@ -606,7 +608,7 @@ export async function runMcpServer(): Promise<void> {
         // the core would still throw. Telling the agent to set the
         // env var would be a lie.
         const existing = getLore(db, args.existingId);
-        if (existing && existing.restricted) {
+        if (shouldRefuseConflictAgainstRestricted(existing)) {
           audit({
             tool: "report_conflict",
             request: sanitised,
@@ -618,14 +620,7 @@ export async function runMcpServer(): Promise<void> {
               {
                 type: "text",
                 text: JSON.stringify(
-                  {
-                    error: "restricted",
-                    hint:
-                      "Restricted records cannot be challenged via MCP. " +
-                      "If you believe one needs revising, surface the concern " +
-                      "to the human and let them use the CLI (`loreguard show <id>` " +
-                      "then `loreguard update` / `loreguard supersede`).",
-                  },
+                  CONFLICT_AGAINST_RESTRICTED_REFUSAL,
                   null,
                   2,
                 ),
@@ -755,15 +750,7 @@ export async function runMcpServer(): Promise<void> {
         repo: args.repo,
         expiresInDays: args.expiresInDays,
       };
-      // R5 — opt-in env gate. `record_absence` is the one MCP write
-      // that bypasses the human review queue (markers are low-stakes,
-      // self-expiring, and never appear as canonical lore). Even so,
-      // agents writing persistent retrieval-affecting state without
-      // approval is a trust-model exception, so v0.1 ships with it
-      // gated off by default. Users opt in deliberately by setting
-      // LOREGUARD_ALLOW_MCP_ABSENCE=1 (the CLI `loreguard absent
-      // record` works unconditionally; humans don't need the gate).
-      if (process.env["LOREGUARD_ALLOW_MCP_ABSENCE"] !== "1") {
+      if (shouldGateAbsenceWrite(process.env)) {
         audit({
           tool: "record_absence",
           request: sanitised,
@@ -774,19 +761,7 @@ export async function runMcpServer(): Promise<void> {
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  error: "mcp_record_absence_disabled",
-                  hint:
-                    "MCP-side absence-marker writes are off by default in v0.1. " +
-                    "Surface the finding to the human and let them record the " +
-                    "marker with `loreguard absent record \"<query>\" --reason \"...\"`. " +
-                    "To enable agent writes, the operator can set " +
-                    "LOREGUARD_ALLOW_MCP_ABSENCE=1 in the MCP server's environment.",
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify(ABSENCE_DISABLED_REFUSAL, null, 2),
             },
           ],
         };

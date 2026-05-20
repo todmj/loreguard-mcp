@@ -266,7 +266,10 @@ export async function evidenceForRecord(
   if (!existsSync(auditPath)) return { rows: [], truncated: 0 };
 
   // Group key: `${tool}\x00${query}` (NUL-separated; query may be anything).
-  const counts = new Map<string, { row: EvidenceRow; count: number }>();
+  const counts = new Map<
+    string,
+    { query: string; tool: EvidenceRow["tool"]; count: number }
+  >();
   const stream = createReadStream(auditPath, { encoding: "utf8" });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -296,12 +299,12 @@ export async function evidenceForRecord(
     if (existing) {
       existing.count++;
     } else {
-      counts.set(key, { row: { query, tool, count: 0 }, count: 1 });
+      counts.set(key, { query, tool, count: 1 });
     }
   }
-  const sorted = Array.from(counts.values())
-    .map((v) => ({ ...v.row, count: v.count }))
-    .sort((a, b) => b.count - a.count);
+  const sorted = Array.from(counts.values()).sort(
+    (a, b) => b.count - a.count,
+  );
   const head = sorted.slice(0, limit);
   const truncated = sorted.length > limit ? sorted.length - limit : 0;
   return { rows: head, truncated };
