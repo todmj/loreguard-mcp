@@ -7,8 +7,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ABSENCE_DISABLED_REFUSAL,
+  CONFLICT_AGAINST_RESTRICTED_REFUSAL,
   redactRestricted,
+  shouldGateAbsenceWrite,
   shouldGateRestrictedGet,
+  shouldRefuseConflictAgainstRestricted,
   stripPossibleConflicts,
 } from "../src/mcp/redact.js";
 
@@ -209,5 +213,105 @@ describe("buildSearchResponseBody", () => {
     });
     expect(r).toEqual({ results: [] });
     expect("next" in r).toBe(false);
+  });
+});
+
+describe("shouldGateAbsenceWrite", () => {
+  it("gates when env is empty (default off)", () => {
+    expect(shouldGateAbsenceWrite({})).toBe(true);
+  });
+
+  it("gates when env has unrelated keys", () => {
+    expect(shouldGateAbsenceWrite({ HOME: "/x", PATH: "/usr/bin" })).toBe(true);
+  });
+
+  it("gates when the var is set to anything other than exactly '1'", () => {
+    expect(
+      shouldGateAbsenceWrite({ LOREGUARD_ALLOW_MCP_ABSENCE: "0" }),
+    ).toBe(true);
+    expect(
+      shouldGateAbsenceWrite({ LOREGUARD_ALLOW_MCP_ABSENCE: "true" }),
+    ).toBe(true);
+    expect(
+      shouldGateAbsenceWrite({ LOREGUARD_ALLOW_MCP_ABSENCE: "yes" }),
+    ).toBe(true);
+    expect(shouldGateAbsenceWrite({ LOREGUARD_ALLOW_MCP_ABSENCE: "" })).toBe(
+      true,
+    );
+  });
+
+  it("opens the gate only when the var is exactly '1'", () => {
+    expect(
+      shouldGateAbsenceWrite({ LOREGUARD_ALLOW_MCP_ABSENCE: "1" }),
+    ).toBe(false);
+  });
+});
+
+describe("ABSENCE_DISABLED_REFUSAL", () => {
+  it("uses the structured error code agents can branch on", () => {
+    expect(ABSENCE_DISABLED_REFUSAL.error).toBe("mcp_record_absence_disabled");
+  });
+
+  it("points the agent at the human-side CLI command, not at the env var", () => {
+    // The refusal mentions setting the env var so operators can find it, but
+    // the primary hint should direct the agent to escalate to the human —
+    // the agent itself cannot flip the gate.
+    expect(ABSENCE_DISABLED_REFUSAL.hint).toMatch(
+      /loreguard absent record/,
+    );
+    expect(ABSENCE_DISABLED_REFUSAL.hint).toMatch(/human|operator/i);
+  });
+
+  it("does not echo any user-provided query or reason text", () => {
+    // Pure constant: nothing dynamic can leak into the refusal body.
+    const keys = Object.keys(ABSENCE_DISABLED_REFUSAL);
+    expect(keys).toEqual(["error", "hint"]);
+  });
+});
+
+describe("shouldRefuseConflictAgainstRestricted", () => {
+  it("returns false when the looked-up record is null (unknown id)", () => {
+    expect(shouldRefuseConflictAgainstRestricted(null)).toBe(false);
+  });
+
+  it("returns false for non-restricted records", () => {
+    expect(shouldRefuseConflictAgainstRestricted({ restricted: false })).toBe(
+      false,
+    );
+  });
+
+  it("returns true for restricted records — env gate doesn't matter", () => {
+    // Distinct from get_lore: there is no env override that unlocks
+    // conflict-against-restricted. Restricted lore can only be revised
+    // by humans via the CLI.
+    expect(shouldRefuseConflictAgainstRestricted({ restricted: true })).toBe(
+      true,
+    );
+  });
+});
+
+describe("CONFLICT_AGAINST_RESTRICTED_REFUSAL", () => {
+  it("uses the structured 'restricted' error code", () => {
+    expect(CONFLICT_AGAINST_RESTRICTED_REFUSAL.error).toBe("restricted");
+  });
+
+  it("does not suggest setting any env var (no such override exists)", () => {
+    expect(CONFLICT_AGAINST_RESTRICTED_REFUSAL.hint).not.toMatch(
+      /LOREGUARD_ALLOW_RESTRICTED_MCP/,
+    );
+    expect(CONFLICT_AGAINST_RESTRICTED_REFUSAL.hint).not.toMatch(
+      /environment variable|env var/i,
+    );
+  });
+
+  it("directs the agent to the human-side CLI revision path", () => {
+    expect(CONFLICT_AGAINST_RESTRICTED_REFUSAL.hint).toMatch(
+      /loreguard update|loreguard supersede/,
+    );
+  });
+
+  it("is a pure constant — no dynamic record fields can leak in", () => {
+    const keys = Object.keys(CONFLICT_AGAINST_RESTRICTED_REFUSAL);
+    expect(keys).toEqual(["error", "hint"]);
   });
 });

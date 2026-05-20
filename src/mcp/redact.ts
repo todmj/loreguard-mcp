@@ -91,6 +91,77 @@ export const SEARCH_NO_HIT_COACH =
   "repos, retry search_lore without `repo` to look across all " +
   "lore (e.g. cross-repo conventions, shared infra rules).";
 
+/**
+ * MCP `record_absence` is the one agent-facing write that bypasses the
+ * human review queue (markers are low-stakes, self-expiring, never
+ * canonical lore). v0.1 still ships it off by default — agents writing
+ * persistent retrieval-affecting state without approval is a trust-model
+ * exception worth an explicit opt-in. The CLI `loreguard absent record`
+ * always works (humans don't need the gate); only MCP-side writes are gated.
+ *
+ * Pure function of `env` so a test can drive it without spinning the server.
+ */
+export function shouldGateAbsenceWrite(env: NodeJS.ProcessEnv): boolean {
+  return env["LOREGUARD_ALLOW_MCP_ABSENCE"] !== "1";
+}
+
+export interface AbsenceDisabledRefusal {
+  readonly error: "mcp_record_absence_disabled";
+  readonly hint: string;
+}
+
+/**
+ * Refusal payload returned by `record_absence` when the env gate blocks
+ * the write. The hint directs the agent to surface the gap to the human
+ * (who can record the marker via the CLI) rather than retrying.
+ */
+export const ABSENCE_DISABLED_REFUSAL: AbsenceDisabledRefusal = {
+  error: "mcp_record_absence_disabled",
+  hint:
+    "MCP-side absence-marker writes are off by default in v0.1. " +
+    "Surface the finding to the human and let them record the " +
+    'marker with `loreguard absent record "<query>" --reason "..."`. ' +
+    "To enable agent writes, the operator can set " +
+    "LOREGUARD_ALLOW_MCP_ABSENCE=1 in the MCP server's environment.",
+};
+
+/**
+ * `report_conflict` against a restricted record is always refused,
+ * regardless of `LOREGUARD_ALLOW_RESTRICTED_MCP` — restricted lore can
+ * only be revised by humans through `loreguard update` / `supersede`,
+ * not by an agent-suggested counter-record. The core layer also
+ * refuses (defence in depth); this MCP-side check produces a friendlier
+ * structured response than letting the core throw.
+ *
+ * Pure function of the looked-up record so tests can pin the contract.
+ */
+export function shouldRefuseConflictAgainstRestricted(
+  existing: { readonly restricted: boolean } | null,
+): boolean {
+  if (!existing) return false;
+  return existing.restricted;
+}
+
+export interface ConflictAgainstRestrictedRefusal {
+  readonly error: "restricted";
+  readonly hint: string;
+}
+
+/**
+ * Refusal payload returned by `report_conflict` when the target record
+ * is restricted. Directs the agent to escalate to the human rather than
+ * suggesting setting an env var — the env var does not unlock this path.
+ */
+export const CONFLICT_AGAINST_RESTRICTED_REFUSAL: ConflictAgainstRestrictedRefusal =
+  {
+    error: "restricted",
+    hint:
+      "Restricted records cannot be challenged via MCP. " +
+      "If you believe one needs revising, surface the concern " +
+      "to the human and let them use the CLI (`loreguard show <id>` " +
+      "then `loreguard update` / `loreguard supersede`).",
+  };
+
 export interface AbsenceMarkerForResponse {
   readonly reason: string;
   readonly recordedAt: string;
