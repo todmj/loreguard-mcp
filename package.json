@@ -37,7 +37,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "docs",
+    "docs/*.md",
+    "docs/adr",
     "skills"
   ],
   "engines": {
@@ -50,7 +51,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
