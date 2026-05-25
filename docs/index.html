@@ -637,7 +637,7 @@
           <button class="copy-btn" type="button" aria-label="Copy install command">Copy</button>
           <span class="g">npm</span> install -g loreguard-mcp
         </div>
-        <p class="note">Pre-npm? Clone and <code>pnpm install &amp;&amp; npm link</code> from source — see the README.</p>
+        <p class="note">Prefer source? Clone and <code>pnpm install &amp;&amp; npm link</code> — see the README's "Develop from source".</p>
 
         <h3>2 · Initialise &amp; wire up your agent</h3>
         <div class="code-block" data-copy="loreguard setup">
@@ -650,7 +650,16 @@
           <button class="copy-btn" type="button" aria-label="Copy demo command">Copy</button>
           <span class="g">loreguard</span> demo <span class="c"># seeds example records, including a draft to triage</span>
         </div>
-        <p class="note">Then run <code>loreguard review</code> to approve your first record, or <code>loreguard induct</code> to seed your own repo from a short interview.</p>
+        <p class="note">Then run <code>loreguard review</code> to approve your first record.</p>
+
+        <h3>4 · Onboard a real repo — from inside Claude</h3>
+        <p class="note" style="margin-bottom:12px;">Step 2 installed a Claude Code skill. <code>cd</code> into your project, then just type the slash command — the agent reads your README, ADRs, recent commits and in-flight migrations, and proposes <em>repo-specific</em> drafts grounded in real source citations.</p>
+        <div class="code-block" data-copy="/loreguard-onboard">
+          <button class="copy-btn" type="button" aria-label="Copy onboard command">Copy</button>
+          <span class="c"># in Claude Code, from your repo:</span><br />
+          <span class="g">/loreguard-onboard</span>
+        </div>
+        <p class="note">Same trust model — every suggestion lands as a draft. Run <code>loreguard review</code> to approve the keepers. No agent handy? <code>loreguard induct</code> runs the same cold-start as a short CLI interview.</p>
       </div>
     </section>
 
