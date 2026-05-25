@@ -17,3 +17,6 @@ dist/
 .idea/
 coverage/
 .nyc_output/
+
+# Product-owner working artefacts — local only, never commit.
+.product-owner/
