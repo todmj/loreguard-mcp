@@ -6,10 +6,25 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
-_Nothing is tagged yet. The first public cut will be **v0.1.0**;
-everything below ships in that release. The initial-scope vs
-added-since split is kept for the changelog reader's benefit, not as
-a version boundary._
+_Nothing yet._
+
+## [0.1.0] — 2026-05-25
+
+First public release on npm. The initial-scope vs added-since split
+below is kept for the changelog reader's benefit, not as a version
+boundary — it all ships in 0.1.0.
+
+### Added — robustness & packaging
+
+- **`busy_timeout` on the SQLite connection** — a writer now waits up
+  to 5s for a held lock instead of throwing `SQLITE_BUSY` immediately.
+  loreguard's premise is multiple agents + the CLI sharing one DB;
+  under WAL writers are serialised, so this is what keeps concurrent
+  writes from surfacing "database is locked" to the agent.
+- **Graceful MCP boot failure** — if the database can't be opened
+  (locked, corrupt, unwritable dir) the server now emits an actionable
+  diagnostic to stderr and exits cleanly, instead of crashing with a
+  raw `SqliteError` stack before the protocol handshake.
 
 ### Added — agent-facing MCP surface
 

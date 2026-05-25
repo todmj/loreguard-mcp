@@ -22,29 +22,21 @@ already decided, rather than reasoning from scratch.
 
 ## Install
 
-> **Not yet on npm.** Until v0.1.0 lands on the registry, install from
-> source. The package is ESM, Node 20+, and ships a native SQLite binding
-> (`better-sqlite3`) that's built at install time.
+Install globally with npm (or the package manager of your choice):
 
 ```bash
-git clone https://github.com/tmj-90/loreguard-mcp.git
-cd loreguard-mcp
-pnpm install                  # builds the better-sqlite3 native binding too
-pnpm build
-npm link                      # REQUIRED: puts `loreguard` + `loreguard-mcp` on your $PATH
+npm i -g loreguard-mcp
 loreguard init                # creates ~/.loreguard/lore.db (mode 0600)
 ```
 
-> **The `npm link` step is required.** Without it, typing `loreguard` in your
-> terminal will give `command not found`. `npm link` symlinks the local
-> `dist/bin/loreguard.js` and `dist/bin/loreguard-mcp.js` into your global npm
-> prefix, so `loreguard`, `loreguard-mcp`, `loreguard review`, `loreguard doctor` etc. work
-> from any directory just like an npm-installed package would.
+That puts two binaries on your `$PATH`: `loreguard` (the human CLI) and
+`loreguard-mcp` (the MCP server your agents connect to). The package is
+ESM, Node 20+, and ships the `better-sqlite3` native binding as a
+prebuilt binary — no compiler needed on common platforms.
 
 Verify it landed:
 
 ```bash
-which loreguard         # → /opt/homebrew/bin/loreguard  (or wherever your npm prefix is)
 loreguard --version     # → 0.1.0
 loreguard doctor
 ```
@@ -87,23 +79,26 @@ Claude: <calls search_lore("password hashing"); answers from the result>
 
 No skill, no slash command, no manual `search_lore` call.
 
-To uninstall the link later:
+### Develop from source
+
+To hack on loreguard itself — or run an unreleased build — clone and link
+instead of installing from npm:
 
 ```bash
-cd loreguard-mcp && npm unlink -g
-```
-
-Don't want `npm link`? Skip it and reference the absolute path everywhere
-(e.g. in `claude mcp add` — see [Hook it up to Claude Code](#hook-it-up-to-claude-code)
-below). You won't be able to type `loreguard` directly though; every CLI
-invocation becomes `node /absolute/path/to/loreguard-mcp/dist/bin/loreguard.js …`.
-
-Once the package is published on npm this will simplify to:
-
-```bash
-npm i -g loreguard-mcp
+git clone https://github.com/tmj-90/loreguard-mcp.git
+cd loreguard-mcp
+pnpm install                  # builds the better-sqlite3 native binding too
+pnpm build
+npm link                      # puts `loreguard` + `loreguard-mcp` on your $PATH
 loreguard init
 ```
+
+`npm link` symlinks the local `dist/bin/*.js` into your global npm prefix,
+so `loreguard`, `loreguard-mcp`, `loreguard review`, etc. work from any
+directory. Undo it later with `npm unlink -g` from the repo. If you'd
+rather not link, reference the absolute path in `claude mcp add` (see
+[Hook it up to Claude Code](#hook-it-up-to-claude-code)) and invoke the
+CLI as `node /absolute/path/to/dist/bin/loreguard.js …`.
 
 ## 5-minute walkthrough
 
