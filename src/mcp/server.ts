@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
 import { audit } from "../core/audit.js";
@@ -12,7 +13,7 @@ import {
   searchLore,
   suggestLore,
 } from "../core/lore.js";
-import { openDb } from "../db/index.js";
+import { defaultDbPath, openDb } from "../db/index.js";
 import {
   ABSENCE_DISABLED_REFUSAL,
   buildSearchResponseBody,
@@ -47,7 +48,27 @@ import {
  * args, result count, and result ids — never the full result bodies.
  */
 export async function runMcpServer(): Promise<void> {
-  const db = openDb();
+  // Open the DB before wiring tools. If it fails (locked by another process,
+  // corrupt file, unwritable dir) the agent's client would otherwise see a
+  // raw SqliteError stack and a bare "server failed to start". Emit an
+  // actionable diagnostic to stderr — which MCP clients surface on launch
+  // failure — and exit cleanly instead.
+  let db: Database;
+  try {
+    db = openDb();
+  } catch (err) {
+    const dbPath = defaultDbPath();
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `loreguard-mcp: could not open the lore database at ${dbPath}\n` +
+        `  reason: ${reason}\n` +
+        `  • If another process holds a write lock, close it and relaunch.\n` +
+        `  • If the file is corrupt, restore a backup or re-run \`loreguard init\`.\n` +
+        `  • Check the directory is writable and you have free disk space.\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const server = new McpServer({
     name: "loreguard",

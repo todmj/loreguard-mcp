@@ -21,7 +21,14 @@ export function defaultDbPath(): string {
  * - Parent dir is created if missing.
  * - WAL mode is enabled so concurrent reads don't block the CLI while the
  *   MCP server is running.
+ * - busy_timeout makes a writer wait for a held lock instead of throwing
+ *   SQLITE_BUSY immediately. The product's premise is multiple agents + the
+ *   CLI sharing one DB; under WAL writers are serialised, so without this a
+ *   second concurrent writer gets "database is locked" straight back. 5s is
+ *   far longer than any write transaction here takes.
  */
+const BUSY_TIMEOUT_MS = 5000;
+
 export function openDb(path: string = defaultDbPath()): Database {
   const dir = dirname(path);
   if (!existsSync(dir)) {
@@ -36,6 +43,7 @@ export function openDb(path: string = defaultDbPath()): Database {
       // chmod is a best-effort lockdown on platforms that support it.
     }
   }
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
