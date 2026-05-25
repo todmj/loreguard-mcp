@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tmj-90.github.io/loreguard-mcp/sitemap.xml

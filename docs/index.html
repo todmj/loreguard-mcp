@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <title>loreguard — Team-ratified knowledge for AI coding agents</title>
+  <meta name="description" content="loreguard is a local SQLite-backed MCP server and CLI that gives AI coding agents team-ratified knowledge. Agents suggest; humans approve. Memory is what one session believes — loreguard is what the team has reviewed." />
+  <meta name="keywords" content="loreguard, MCP server, AI coding agent memory, Claude Code memory, Cursor memory, model context protocol, agent knowledge base, team knowledge AI, ratified knowledge, SQLite MCP, AI agent context, just-in-time context" />
+  <meta name="author" content="tmj" />
+  <meta name="robots" content="index, follow, max-image-preview:large" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0a0e14" />
+
+  <link rel="canonical" href="https://tmj-90.github.io/loreguard-mcp/" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="loreguard" />
+  <meta property="og:title" content="loreguard — Team-ratified knowledge for AI coding agents" />
+  <meta property="og:description" content="A local MCP server + CLI for AI coding agents. Agents suggest knowledge; humans approve. Memory is what one session believes — loreguard is what the team has reviewed and approved." />
+  <meta property="og:url" content="https://tmj-90.github.io/loreguard-mcp/" />
+  <meta property="og:image" content="https://tmj-90.github.io/loreguard-mcp/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="loreguard — team-ratified knowledge for AI coding agents" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="loreguard — Team-ratified knowledge for AI coding agents" />
+  <meta name="twitter:description" content="A local MCP server + CLI for AI coding agents. Agents suggest knowledge; humans approve. The trusted layer above per-session memory." />
+  <meta name="twitter:image" content="https://tmj-90.github.io/loreguard-mcp/og-image.png" />
+  <meta name="twitter:image:alt" content="loreguard — team-ratified knowledge for AI coding agents" />
+
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="sitemap" type="application/xml" href="sitemap.xml" />
+
+  <!-- Structured data: software + source + FAQ for rich results -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "name": "loreguard",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS, Linux, Windows (Node.js 20+)",
+        "description": "A local SQLite-backed MCP server and CLI that gives AI coding agents team-ratified knowledge. Agents suggest records via MCP; humans approve them via the CLI.",
+        "url": "https://tmj-90.github.io/loreguard-mcp/",
+        "downloadUrl": "https://github.com/tmj-90/loreguard-mcp",
+        "softwareVersion": "0.1.0",
+        "license": "https://opensource.org/licenses/MIT",
+        "author": { "@type": "Person", "name": "tmj" },
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "name": "loreguard-mcp",
+        "codeRepository": "https://github.com/tmj-90/loreguard-mcp",
+        "programmingLanguage": "TypeScript",
+        "license": "https://opensource.org/licenses/MIT"
+      },
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "How is loreguard different from agent memory?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Generic agent memory stores what one session inferred. loreguard stores what a team has reviewed and approved. Agents can suggest records, but a record only becomes trusted lore after a human approves it — so the team gets one ratified record per topic instead of N parallel beliefs."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why not just use CLAUDE.md?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "CLAUDE.md is always-on context that every prompt pays for. loreguard is just-in-time: an agent calls search_lore only when a task warrants it and gets a compact summary of what the team has already decided. The two are complementary."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Where is the data stored?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Everything is local. Records live in a SQLite database at ~/.loreguard/lore.db (file mode 0600). There is no cloud component and read-tracking is off by default."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Which AI agents work with loreguard?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Any client that speaks the Model Context Protocol (MCP), including Claude Code and Cursor. loreguard ships an MCP server plus a human-facing CLI for review and approval."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --bg-soft: #0f141d;
+      --surface: #141b26;
+      --surface-2: #1a2230;
+      --border: #232c3b;
+      --border-soft: #1b2330;
+      --text: #e6edf3;
+      --muted: #8a95a5;
+      --muted-dim: #5d6878;
+      --accent: #4ade80;
+      --accent-dim: #2faa5b;
+      --accent-glow: rgba(74, 222, 128, 0.15);
+      --amber: #fbbf24;
+      --blue: #60a5fa;
+      --radius: 14px;
+      --radius-sm: 9px;
+      --maxw: 1080px;
+      --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 17px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .skip {
+      position: absolute; left: -9999px; top: 0;
+      background: var(--accent); color: #08110a; padding: 10px 16px;
+      border-radius: 0 0 8px 0; font-weight: 600; z-index: 100;
+    }
+    .skip:focus { left: 0; }
+
+    .wrap { width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+    /* ---- nav ---- */
+    header.nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: saturate(140%) blur(10px);
+      background: rgba(10, 14, 20, 0.78);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 62px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.01em; }
+    .brand:hover { text-decoration: none; }
+    .brand .mark { width: 26px; height: 26px; flex: 0 0 auto; }
+    .nav-links { display: flex; align-items: center; gap: 26px; }
+    .nav-links a { color: var(--muted); font-size: 15px; font-weight: 500; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .nav-cta {
+      border: 1px solid var(--border); padding: 7px 15px; border-radius: 8px;
+      color: var(--text) !important; font-family: var(--mono); font-size: 13.5px;
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    .nav-cta:hover { border-color: var(--accent-dim); background: var(--surface); text-decoration: none; }
+    @media (max-width: 720px) { .nav-links a.hide-sm { display: none; } }
+
+    /* ---- hero ---- */
+    .hero { position: relative; padding: 88px 0 64px; text-align: center; }
+    .hero::before {
+      content: ""; position: absolute; inset: 0; z-index: -1;
+      background:
+        radial-gradient(60% 50% at 50% 0%, var(--accent-glow), transparent 70%),
+        radial-gradient(40% 30% at 80% 10%, rgba(96,165,250,0.07), transparent 70%);
+      pointer-events: none;
+    }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--mono); font-size: 13px; color: var(--accent);
+      border: 1px solid var(--border); background: var(--surface);
+      padding: 6px 13px; border-radius: 999px; margin-bottom: 26px;
+    }
+    .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+    h1 {
+      font-size: clamp(2.3rem, 6vw, 3.8rem); line-height: 1.05; margin: 0 0 20px;
+      letter-spacing: -0.03em; font-weight: 800;
+    }
+    h1 .grad {
+      background: linear-gradient(120deg, #fff 10%, var(--accent) 90%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .sub { font-size: clamp(1.05rem, 2.4vw, 1.32rem); color: var(--muted); max-width: 640px; margin: 0 auto 14px; }
+    .sub strong { color: var(--text); font-weight: 600; }
+    .contrast {
+      font-family: var(--mono); font-size: 14.5px; color: var(--muted);
+      max-width: 660px; margin: 0 auto 34px; line-height: 1.7;
+    }
+    .contrast b { color: var(--accent); font-weight: 600; }
+
+    .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 30px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 9px;
+      padding: 13px 22px; border-radius: 10px; font-weight: 600; font-size: 15.5px;
+      border: 1px solid transparent; cursor: pointer; transition: transform .08s ease, background .15s ease, border-color .15s ease;
+    }
+    .btn:hover { text-decoration: none; transform: translateY(-1px); }
+    .btn-primary { background: var(--accent); color: #07120a; }
+    .btn-primary:hover { background: #5ee992; }
+    .btn-ghost { background: var(--surface); color: var(--text); border-color: var(--border); }
+    .btn-ghost:hover { border-color: var(--accent-dim); background: var(--surface-2); }
+    .btn svg { width: 18px; height: 18px; }
+
+    /* ---- terminal ---- */
+    .term {
+      text-align: left; max-width: 720px; margin: 0 auto;
+      background: linear-gradient(180deg, #0e141d, #0b1018);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: 0 30px 80px -30px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.02) inset;
+      overflow: hidden;
+    }
+    .term-bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); background: rgba(255,255,255,0.015); }
+    .term-bar .lights { display: flex; gap: 7px; }
+    .term-bar .lights span { width: 11px; height: 11px; border-radius: 50%; }
+    .term-bar .lights span:nth-child(1) { background: #ff5f56; }
+    .term-bar .lights span:nth-child(2) { background: #ffbd2e; }
+    .term-bar .lights span:nth-child(3) { background: #27c93f; }
+    .term-bar .title { font-family: var(--mono); font-size: 12.5px; color: var(--muted-dim); margin-left: 6px; }
+    .term-body { padding: 20px 22px; font-family: var(--mono); font-size: 14px; line-height: 1.8; overflow-x: auto; }
+    .term-body .line { white-space: pre; }
+    .term-body .prompt { color: var(--accent); }
+    .term-body .cmd { color: var(--text); }
+    .term-body .out { color: var(--muted); }
+    .term-body .ok { color: var(--accent); }
+    .term-body .draft { color: var(--amber); }
+    .term-body .comment { color: var(--muted-dim); }
+    .term-body .arrow { color: var(--blue); }
+
+    /* ---- sections ---- */
+    section { padding: 76px 0; }
+    .section-head { text-align: center; max-width: 680px; margin: 0 auto 52px; }
+    .kicker { font-family: var(--mono); font-size: 13px; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; }
+    h2 { font-size: clamp(1.7rem, 4vw, 2.5rem); line-height: 1.12; margin: 0 0 16px; letter-spacing: -0.02em; font-weight: 800; }
+    h2 + p { color: var(--muted); font-size: 1.08rem; margin: 0; }
+    .divider { border: 0; border-top: 1px solid var(--border-soft); margin: 0; }
+
+    /* ---- loop steps ---- */
+    .loop { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    @media (max-width: 860px) { .loop { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 480px) { .loop { grid-template-columns: 1fr; } }
+    .step {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 22px 20px; position: relative;
+    }
+    .step .n { font-family: var(--mono); font-size: 12px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; display: inline-block; margin-bottom: 14px; }
+    .step h3 { font-size: 1.08rem; margin: 0 0 8px; font-weight: 700; }
+    .step p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+    .step .who { font-family: var(--mono); font-size: 11.5px; margin-top: 12px; display: inline-block; padding: 2px 8px; border-radius: 5px; }
+    .who.agent { color: var(--blue); background: rgba(96,165,250,0.1); }
+    .who.human { color: var(--accent); background: rgba(74,222,128,0.1); }
+
+    /* ---- tools / features grid ---- */
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 880px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 24px 22px; transition: border-color .15s ease, transform .1s ease, background .15s ease;
+    }
+    .card:hover { border-color: var(--accent-dim); transform: translateY(-2px); background: var(--surface-2); }
+    .card .tool { font-family: var(--mono); font-size: 15px; color: var(--accent); margin-bottom: 10px; font-weight: 600; }
+    .card h3 { font-size: 1.05rem; margin: 0 0 8px; font-weight: 700; }
+    .card p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+
+    /* ---- trust list ---- */
+    .trust { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 30px; max-width: 880px; margin: 0 auto; }
+    @media (max-width: 700px) { .trust { grid-template-columns: 1fr; } }
+    .trust li { list-style: none; display: flex; gap: 13px; align-items: flex-start; padding: 6px 0; }
+    .trust { padding-left: 0; }
+    .trust .check { flex: 0 0 auto; width: 22px; height: 22px; margin-top: 2px; }
+    .trust .t-text strong { display: block; font-size: 15.5px; }
+    .trust .t-text span { color: var(--muted); font-size: 14px; }
+
+    /* ---- compare table ---- */
+    .compare-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+    table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+    th, td { text-align: left; padding: 15px 18px; border-bottom: 1px solid var(--border-soft); }
+    thead th { background: var(--surface-2); font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); }
+    thead th:first-child { color: var(--muted); }
+    tbody th { font-weight: 600; color: var(--muted); font-size: 14px; }
+    td .yes { color: var(--accent); font-weight: 600; }
+    td .no { color: var(--muted-dim); }
+    .col-lore { background: rgba(74,222,128,0.04); }
+    tr:last-child td, tr:last-child th { border-bottom: 0; }
+
+    /* ---- install ---- */
+    .install { max-width: 720px; margin: 0 auto; }
+    .code-block {
+      position: relative; background: #0b1018; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 16px 18px; font-family: var(--mono);
+      font-size: 14px; color: var(--text); margin: 12px 0; overflow-x: auto;
+    }
+    .code-block .c { color: var(--muted-dim); }
+    .code-block .g { color: var(--accent); }
+    .copy-btn {
+      position: absolute; top: 10px; right: 10px; background: var(--surface);
+      border: 1px solid var(--border); color: var(--muted); border-radius: 6px;
+      padding: 5px 10px; font-size: 12px; font-family: var(--mono); cursor: pointer;
+    }
+    .copy-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+    .install h3 { font-size: 1.05rem; margin: 28px 0 4px; }
+    .install .note { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+    .install .note code { font-family: var(--mono); color: var(--accent); font-size: 13px; }
+
+    /* ---- faq ---- */
+    .faq { max-width: 760px; margin: 0 auto; }
+    details {
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 0; margin-bottom: 12px; background: var(--surface); overflow: hidden;
+    }
+    details[open] { border-color: var(--accent-dim); }
+    summary {
+      cursor: pointer; padding: 18px 20px; font-weight: 600; font-size: 16px;
+      list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 16px;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; font-family: var(--mono); color: var(--accent); font-size: 20px; flex: 0 0 auto; }
+    details[open] summary::after { content: "\2212"; }
+    details p { margin: 0; padding: 0 20px 20px; color: var(--muted); font-size: 15px; line-height: 1.65; }
+
+    /* ---- final cta ---- */
+    .final { text-align: center; }
+    .final-card {
+      background: linear-gradient(160deg, var(--surface-2), var(--surface));
+      border: 1px solid var(--border); border-radius: 20px; padding: 56px 32px;
+      position: relative; overflow: hidden;
+    }
+    .final-card::before {
+      content: ""; position: absolute; inset: 0; z-index: 0;
+      background: radial-gradient(50% 80% at 50% 0%, var(--accent-glow), transparent 70%);
+    }
+    .final-card > * { position: relative; z-index: 1; }
+    .final h2 { margin-bottom: 14px; }
+    .final p { color: var(--muted); max-width: 520px; margin: 0 auto 28px; }
+
+    /* ---- footer ---- */
+    footer { border-top: 1px solid var(--border-soft); padding: 44px 0 56px; color: var(--muted); }
+    .foot-inner { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+    .foot-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); }
+    .foot-brand .mark { width: 24px; height: 24px; }
+    .foot-links { display: flex; gap: 40px; flex-wrap: wrap; }
+    .foot-col h4 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-dim); margin: 0 0 12px; font-family: var(--mono); }
+    .foot-col a { display: block; color: var(--muted); font-size: 14.5px; margin-bottom: 9px; }
+    .foot-col a:hover { color: var(--text); text-decoration: none; }
+    .foot-bottom { margin-top: 36px; font-size: 13.5px; color: var(--muted-dim); font-family: var(--mono); }
+
+    .nowrap { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a href="#top" class="brand" aria-label="loreguard home">
+        <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <path d="M16 2.5 4 7v8.5c0 7.2 5 11.6 12 14 7-2.4 12-6.8 12-14V7L16 2.5Z" fill="#0f141d" stroke="#4ade80" stroke-width="1.8"/>
+          <path d="m11 16 3.4 3.4L21.5 12" stroke="#4ade80" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        loreguard
+      </a>
+      <nav class="nav-links" aria-label="primary">
+        <a href="#how" class="hide-sm">How it works</a>
+        <a href="#tools" class="hide-sm">MCP tools</a>
+        <a href="#trust" class="hide-sm">Trust model</a>
+        <a href="#install">Install</a>
+        <a class="nav-cta" href="https://github.com/tmj-90/loreguard-mcp" rel="noopener">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <a id="top"></a>
+
+    <!-- HERO -->
+    <section class="hero">
+      <div class="wrap">
+        <span class="eyebrow"><span class="dot"></span> Model Context Protocol · SQLite · MIT</span>
+        <h1>Team-ratified knowledge<br /><span class="grad">for AI coding agents</span></h1>
+        <p class="sub">A local MCP server + CLI that gives your coding agents the conventions, decisions, and gotchas your team has <strong>actually reviewed</strong> — not whatever one session happened to infer.</p>
+        <p class="contrast">Memory says <b>what one session believes</b>.<br />loreguard says <b>what the team has approved</b>.</p>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Get started
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/tmj-90/loreguard-mcp" rel="noopener">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            Star on GitHub
+          </a>
+        </div>
+
+        <div class="term" role="img" aria-label="Terminal showing an agent searching ratified lore, suggesting a draft, and a human reviewing it.">
+          <div class="term-bar">
+            <div class="lights"><span></span><span></span><span></span></div>
+            <span class="title">loreguard — the trust loop</span>
+          </div>
+          <div class="term-body">
+<div class="line"><span class="comment"># the agent searches before non-trivial work</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">loreguard search "rate limiting"</span></div>
+<div class="line"><span class="arrow">  →</span> <span class="out">1 ratified record · approved by the team · conf=high</span></div>
+<div class="line"> </div>
+<div class="line"><span class="comment"># mid-task, the agent discovers something durable</span></div>
+<div class="line"><span class="out">  agent calls </span><span class="ok">suggest_lore</span><span class="out"> →  lands as </span><span class="draft">DRAFT</span></div>
+<div class="line"> </div>
+<div class="line"><span class="comment"># a human decides what becomes trusted lore</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">loreguard review</span></div>
+<div class="line"><span class="draft">  ▸ draft</span> <span class="out">"Retries must respect Retry-After header"</span></div>
+<div class="line"><span class="ok">    ✓ approve</span><span class="out">  /  </span><span class="out">✗ reject</span>   <span class="comment">← human in the loop</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- PROBLEM -->
+    <section id="why">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">The problem</div>
+          <h2>Capturing memory is easy. Trusting it is the hard part.</h2>
+          <p>Most agent-memory tools optimise for capture: every session writes down what it learned. The failure mode is built in — a confident agent recites something it inferred once and got wrong, and the next agent inherits the mistake. loreguard inverts the primitive. It optimises for <strong style="color:var(--text)">trust after capture</strong>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section id="how" style="padding-top:0;">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">How it works</div>
+          <h2>Agents suggest. Humans approve.</h2>
+          <p>One closed loop turns scattered session knowledge into a single trusted record per topic.</p>
+        </div>
+        <div class="loop">
+          <div class="step">
+            <span class="n">01</span>
+            <h3>Retrieve</h3>
+            <p>Before non-trivial work the agent calls <code>search_lore</code> and gets a compact summary of what the team already decided.</p>
+            <span class="who agent">agent · via MCP</span>
+          </div>
+          <div class="step">
+            <span class="n">02</span>
+            <h3>Suggest</h3>
+            <p>Discover something durable? The agent files it with <code>suggest_lore</code>. It always lands as a draft — never as trusted lore.</p>
+            <span class="who agent">agent · via MCP</span>
+          </div>
+          <div class="step">
+            <span class="n">03</span>
+            <h3>Review</h3>
+            <p>A human runs <code>loreguard review</code> and triages the queue: approve, reject with a reason, or edit.</p>
+            <span class="who human">human · via CLI</span>
+          </div>
+          <div class="step">
+            <span class="n">04</span>
+            <h3>Trust</h3>
+            <p>Approved records become ratified lore the whole team's agents retrieve — one source of truth, not N parallel beliefs.</p>
+            <span class="who human">team · ratified</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MCP TOOLS -->
+    <section id="tools" style="background:var(--bg-soft); border-top:1px solid var(--border-soft); border-bottom:1px solid var(--border-soft);">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">MCP surface</div>
+          <h2>Five tools your agent already knows when to call</h2>
+          <p>Each tool description leads with <em>when</em> to call it, so retrieval becomes an ambient habit even in agents with zero loreguard awareness.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <div class="tool">search_lore</div>
+            <h3>Find ratified positions</h3>
+            <p>Compact summaries ranked by relevance. On a miss it coaches the agent on what to do next instead of dead-ending.</p>
+          </div>
+          <div class="card">
+            <div class="tool">get_lore</div>
+            <h3>Full record on demand</h3>
+            <p>Pull the complete body only when needed. Restricted records are env-gated, so sensitive lore never leaks by default.</p>
+          </div>
+          <div class="card">
+            <div class="tool">suggest_lore</div>
+            <h3>Draft, never publish</h3>
+            <p>Agent-suggested records always enter the review queue as drafts. Duplicate hints and structured errors keep them clean.</p>
+          </div>
+          <div class="card">
+            <div class="tool">report_conflict</div>
+            <h3>Flag code-vs-lore drift</h3>
+            <p>When the codebase disagrees with a record, the agent files a draft counter-record. The original is never mutated.</p>
+          </div>
+          <div class="card">
+            <div class="tool">record_absence</div>
+            <h3>Mark a known gap</h3>
+            <p>"We checked — no policy here." Self-expiring markers stop agents re-searching the same void. Off by default via MCP.</p>
+          </div>
+          <div class="card" style="border-style:dashed;">
+            <div class="tool" style="color:var(--muted);">+ the CLI</div>
+            <h3>The human side</h3>
+            <p>Review, approve, supersede, sync to Markdown, audit, stats, onboarding interviews — the whole governance surface.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRUST MODEL -->
+    <section id="trust">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">Trust model</div>
+          <h2>Guardrails that hold under pressure</h2>
+          <p>The trust primitives aren't bolted on — they're enforced at every boundary and covered by tests.</p>
+        </div>
+        <ul class="trust">
+          <li>
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t-text"><strong>Agent writes are drafts</strong><span>Nothing an agent suggests becomes trusted until a human approves it.</span></div>
+          </li>
+          <li>
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t-text"><strong>Confidence is clamped</strong><span>Drafts can't claim high confidence; records without a source can't either.</span></div>
+          </li>
+          <li>
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t-text"><strong>Restricted records are gated</strong><span>Excluded from default search and env-gated for direct fetch over MCP.</span></div>
+          </li>
+          <li>
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t-text"><strong>Sanitised audit log</strong><span>Sensitive fields are recorded as character counts only — never raw text.</span></div>
+          </li>
+          <li>
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t-text"><strong>Local-first, private</strong><span>One SQLite file at <code style="font-family:var(--mono);color:var(--accent);font-size:13px">~/.loreguard/lore.db</code>, mode 0600. No cloud.</span></div>
+          </li>
+          <li>
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="t-text"><strong>PR-reviewable sync</strong><span>Export records to Markdown so changes ride through normal code review.</span></div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section id="compare" style="background:var(--bg-soft); border-top:1px solid var(--border-soft); border-bottom:1px solid var(--border-soft);">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">Where it fits</div>
+          <h2>Not a replacement — the trusted layer on top</h2>
+          <p>CLAUDE.md and generic memory both have a place. loreguard adds the one thing they lack: a human-ratified source of truth.</p>
+        </div>
+        <div class="compare-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col"></th>
+                <th scope="col">CLAUDE.md</th>
+                <th scope="col">Generic memory</th>
+                <th scope="col" class="col-lore">loreguard</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Trust source</th>
+                <td>Whoever edits the file</td>
+                <td>A single session's inference</td>
+                <td class="col-lore"><span class="yes">Human review</span></td>
+              </tr>
+              <tr>
+                <th scope="row">When it loads</th>
+                <td>Every prompt (always-on)</td>
+                <td>Varies / implicit</td>
+                <td class="col-lore"><span class="yes">Just-in-time</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Approval gate</th>
+                <td><span class="no">None</span></td>
+                <td><span class="no">None</span></td>
+                <td class="col-lore"><span class="yes">Draft → approve</span></td>
+              </tr>
+              <tr>
+                <th scope="row">One record per topic</th>
+                <td>Manual</td>
+                <td><span class="no">N parallel beliefs</span></td>
+                <td class="col-lore"><span class="yes">Ratified</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Scales with team</th>
+                <td>Gets bloated</td>
+                <td><span class="no">Diverges</span></td>
+                <td class="col-lore"><span class="yes">Converges</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- INSTALL -->
+    <section id="install">
+      <div class="wrap install">
+        <div class="section-head">
+          <div class="kicker">Get started</div>
+          <h2>Up and running in a few minutes</h2>
+          <p>ESM, Node.js 20+, ships a native SQLite binding. Works with any MCP client — Claude Code, Cursor, and more.</p>
+        </div>
+
+        <h3>1 · Install</h3>
+        <div class="code-block" data-copy="npm install -g loreguard-mcp">
+          <button class="copy-btn" type="button" aria-label="Copy install command">Copy</button>
+          <span class="g">npm</span> install -g loreguard-mcp
+        </div>
+        <p class="note">Pre-npm? Clone and <code>pnpm install &amp;&amp; npm link</code> from source — see the README.</p>
+
+        <h3>2 · Initialise &amp; wire up your agent</h3>
+        <div class="code-block" data-copy="loreguard setup">
+          <button class="copy-btn" type="button" aria-label="Copy setup command">Copy</button>
+          <span class="g">loreguard</span> setup <span class="c"># registers the MCP server + retrieval rule + onboarding skill</span>
+        </div>
+
+        <h3>3 · See the loop in 5 minutes</h3>
+        <div class="code-block" data-copy="loreguard demo">
+          <button class="copy-btn" type="button" aria-label="Copy demo command">Copy</button>
+          <span class="g">loreguard</span> demo <span class="c"># seeds example records, including a draft to triage</span>
+        </div>
+        <p class="note">Then run <code>loreguard review</code> to approve your first record, or <code>loreguard induct</code> to seed your own repo from a short interview.</p>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq" style="background:var(--bg-soft); border-top:1px solid var(--border-soft); border-bottom:1px solid var(--border-soft);">
+      <div class="wrap faq">
+        <div class="section-head">
+          <div class="kicker">FAQ</div>
+          <h2>Questions, answered</h2>
+        </div>
+        <details>
+          <summary>How is this different from agent memory?</summary>
+          <p>Generic memory stores what one session inferred. loreguard stores what a team has reviewed and approved. Agents can suggest records, but a record only becomes trusted lore after a human approves it — so the team gets one ratified record per topic instead of N parallel, possibly-wrong beliefs.</p>
+        </details>
+        <details>
+          <summary>Why not just use CLAUDE.md?</summary>
+          <p>CLAUDE.md is always-on context that every prompt pays for. loreguard is just-in-time: the agent calls <code>search_lore</code> only when a task warrants it and gets a compact summary of what's already decided. They're complementary — many teams keep a short CLAUDE.md retrieval rule that points agents at loreguard.</p>
+        </details>
+        <details>
+          <summary>Where does the data live? Is anything sent to the cloud?</summary>
+          <p>Everything is local. Records live in a SQLite database at <code>~/.loreguard/lore.db</code> (file mode 0600). There's no cloud component, and read-tracking is off by default. You can export records to Markdown for PR-reviewable sync across a team.</p>
+        </details>
+        <details>
+          <summary>Which agents and editors does it support?</summary>
+          <p>Any client that speaks the Model Context Protocol (MCP) — including Claude Code and Cursor. loreguard ships an MCP server for agents plus a human-facing CLI for review, approval, and governance.</p>
+        </details>
+        <details>
+          <summary>What does it cost?</summary>
+          <p>Nothing. loreguard is free and open source under the MIT license.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- FINAL CTA -->
+    <section class="final">
+      <div class="wrap">
+        <div class="final-card">
+          <h2>Give your agents knowledge you can trust</h2>
+          <p>Stop re-explaining the same conventions to every session. Ratify them once.</p>
+          <div class="cta-row" style="margin-bottom:0;">
+            <a class="btn btn-primary" href="https://github.com/tmj-90/loreguard-mcp" rel="noopener">
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+              View on GitHub
+            </a>
+            <a class="btn btn-ghost" href="#install">Read the quickstart</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="foot-inner">
+        <div>
+          <div class="foot-brand">
+            <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <path d="M16 2.5 4 7v8.5c0 7.2 5 11.6 12 14 7-2.4 12-6.8 12-14V7L16 2.5Z" fill="#0f141d" stroke="#4ade80" stroke-width="1.8"/>
+              <path d="m11 16 3.4 3.4L21.5 12" stroke="#4ade80" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            loreguard
+          </div>
+          <p style="max-width:280px; font-size:14px; margin:14px 0 0;">Team-ratified knowledge for AI coding agents. Local, open source, MIT.</p>
+        </div>
+        <div class="foot-links">
+          <div class="foot-col">
+            <h4>Project</h4>
+            <a href="https://github.com/tmj-90/loreguard-mcp" rel="noopener">GitHub</a>
+            <a href="https://github.com/tmj-90/loreguard-mcp#readme" rel="noopener">README</a>
+            <a href="https://github.com/tmj-90/loreguard-mcp/blob/main/CHANGELOG.md" rel="noopener">Changelog</a>
+          </div>
+          <div class="foot-col">
+            <h4>Docs</h4>
+            <a href="https://github.com/tmj-90/loreguard-mcp/blob/main/docs/PRINCIPLES.md" rel="noopener">Principles</a>
+            <a href="https://github.com/tmj-90/loreguard-mcp/blob/main/docs/SECURITY.md" rel="noopener">Security</a>
+            <a href="https://github.com/tmj-90/loreguard-mcp/blob/main/docs/DATA-FLOW.md" rel="noopener">Data flow</a>
+          </div>
+          <div class="foot-col">
+            <h4>Reference</h4>
+            <a href="#how">How it works</a>
+            <a href="#tools">MCP tools</a>
+            <a href="#install">Install</a>
+          </div>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        © <span id="year">2026</span> tmj · MIT License · Built for the <a href="https://modelcontextprotocol.io" rel="noopener">Model Context Protocol</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Footer year
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    // Copy-to-clipboard for install commands
+    document.querySelectorAll(".code-block").forEach(function (block) {
+      var btn = block.querySelector(".copy-btn");
+      if (!btn) return;
+      btn.addEventListener("click", function () {
+        var text = block.getAttribute("data-copy") || "";
+        navigator.clipboard.writeText(text).then(function () {
+          var prev = btn.textContent;
+          btn.textContent = "Copied";
+          setTimeout(function () { btn.textContent = prev; }, 1500);
+        });
+      });
+    });
+  </script>
+</body>
+</html>
