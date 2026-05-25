@@ -1911,7 +1911,7 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
   }
   if (rest[0] === "--version" || rest[0] === "-v") {
     // Static for now — populated from package.json at build time later.
-    process.stdout.write("0.1.0\n");
+    process.stdout.write("0.1.1\n");
     return 0;
   }
   const [cmd, ...subArgs] = rest;

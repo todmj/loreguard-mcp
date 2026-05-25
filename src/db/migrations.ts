@@ -10,6 +10,28 @@ export interface Migration {
   readonly up: (db: Database) => void;
 }
 
+/**
+ * Thrown when the database on disk has migrations applied that THIS binary
+ * doesn't know about — i.e. it was written by a newer loreguard. Refusing
+ * to open is deliberate: the docs endorse a team-shared DB on a synced
+ * volume, so an older binary could otherwise write against a schema it
+ * doesn't understand and corrupt newer data. Distinguished by `code` so
+ * entry points can print the remediation message instead of a stack trace.
+ */
+export class DatabaseTooNewError extends Error {
+  readonly code = "LOREGUARD_DB_TOO_NEW";
+  constructor(readonly unknownMigrations: ReadonlyArray<string>) {
+    super(
+      "this lore database was written by a newer version of loreguard.\n" +
+        `  It has migrations this version doesn't recognise: ${unknownMigrations.join(", ")}.\n` +
+        "  Upgrade to the latest release before opening it:\n" +
+        "    npm i -g loreguard-mcp@latest\n" +
+        "  (Refusing to open — an older schema could corrupt newer data.)",
+    );
+    this.name = "DatabaseTooNewError";
+  }
+}
+
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   {
     id: "001-initial-schema",
@@ -145,6 +167,14 @@ export function runMigrations(db: Database): { applied: string[] } {
       (r) => r.id,
     ),
   );
+  // Version ceiling: if the DB carries migrations this binary doesn't ship,
+  // it was written by a newer loreguard. Refuse rather than operate against
+  // a schema we don't understand (mixed-version team-shared DB).
+  const known = new Set(MIGRATIONS.map((m) => m.id));
+  const unknown = [...seen].filter((id) => !known.has(id)).sort();
+  if (unknown.length > 0) {
+    throw new DatabaseTooNewError(unknown);
+  }
   const applied: string[] = [];
   const insert = db.prepare(
     "INSERT INTO migrations (id, applied_at) VALUES (?, ?)",

@@ -8,6 +8,18 @@ itself is pre-1.0 so semver promises are best-effort.
 
 _Nothing yet._
 
+## [0.1.1] — 2026-05-25
+
+### Fixed
+
+- **Migration version ceiling** — `openDb` now refuses, with an
+  upgrade message, to open a database that carries migrations this
+  binary doesn't ship (i.e. one written by a newer loreguard). The
+  docs endorse a team-shared DB on a synced volume, so without this an
+  older binary could write against a schema it doesn't understand and
+  corrupt newer data. Both the CLI and the MCP server surface the
+  remediation cleanly instead of a stack trace.
+
 ## [0.1.0] — 2026-05-25
 
 First public release on npm. The initial-scope vs added-since split

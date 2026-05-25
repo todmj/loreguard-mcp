@@ -8,9 +8,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import BetterSqlite3 from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDb } from "../src/db/index.js";
+import { DatabaseTooNewError } from "../src/db/migrations.js";
 
 let dir: string;
 
@@ -42,5 +44,38 @@ describe("openDb connection pragmas", () => {
     const fk = db.pragma("foreign_keys", { simple: true });
     expect(fk).toBe(1);
     db.close();
+  });
+});
+
+describe("migration version ceiling", () => {
+  it("opens a DB this binary fully knows", () => {
+    const path = join(dir, "lore.db");
+    openDb(path).close();
+    expect(() => openDb(path).close()).not.toThrow();
+  });
+
+  it("refuses a DB carrying a migration this binary doesn't ship", () => {
+    const path = join(dir, "lore.db");
+    // Open once so the schema + migrations table exist, then simulate a
+    // newer loreguard having applied a migration this build doesn't know.
+    openDb(path).close();
+    const raw = new BetterSqlite3(path);
+    raw
+      .prepare("INSERT INTO migrations (id, applied_at) VALUES (?, ?)")
+      .run("999-from-the-future", new Date().toISOString());
+    raw.close();
+
+    expect(() => openDb(path)).toThrow(DatabaseTooNewError);
+    try {
+      openDb(path);
+    } catch (err) {
+      expect(err).toBeInstanceOf(DatabaseTooNewError);
+      expect((err as DatabaseTooNewError).code).toBe("LOREGUARD_DB_TOO_NEW");
+      expect((err as DatabaseTooNewError).unknownMigrations).toContain(
+        "999-from-the-future",
+      );
+      // Message must point the user at the upgrade, not at "corrupt file".
+      expect((err as Error).message).toMatch(/npm i -g loreguard-mcp@latest/);
+    }
   });
 });

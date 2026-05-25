@@ -30,7 +30,7 @@ function checkFileMode(path: string, required: number): Check["level"] {
 
 function pkgVersion(): string {
   // Static for v0.1; reads from a bundled JSON in a later release.
-  return "0.1.0";
+  return "0.1.1";
 }
 
 export async function runDoctor(): Promise<{ exitCode: number; checks: Check[] }> {

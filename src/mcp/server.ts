@@ -14,6 +14,7 @@ import {
   suggestLore,
 } from "../core/lore.js";
 import { defaultDbPath, openDb } from "../db/index.js";
+import { DatabaseTooNewError } from "../db/migrations.js";
 import {
   ABSENCE_DISABLED_REFUSAL,
   buildSearchResponseBody,
@@ -57,6 +58,11 @@ export async function runMcpServer(): Promise<void> {
   try {
     db = openDb();
   } catch (err) {
+    if (err instanceof DatabaseTooNewError) {
+      process.stderr.write(`loreguard-mcp: ${err.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
     const dbPath = defaultDbPath();
     const reason = err instanceof Error ? err.message : String(err);
     process.stderr.write(
@@ -72,7 +78,7 @@ export async function runMcpServer(): Promise<void> {
 
   const server = new McpServer({
     name: "loreguard",
-    version: "0.1.0",
+    version: "0.1.1",
   });
 
   // ---- search_lore -----------------------------------------------------
