@@ -337,3 +337,96 @@ describe("CLI — absent record/list", () => {
     expect(out).toContain("no team policy");
   });
 });
+
+describe("CLI — search truncation + prune integrity", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+  });
+
+  it("search prints 'showing N of M' when the result set is capped", async () => {
+    for (let i = 0; i < 6; i++) {
+      await run("add", "--title", `widget tracker ${i}`, "--summary", "s", "--body", "b");
+    }
+    out = "";
+    expect(await run("search", "widget", "tracker", "--limit", "2")).toBe(0);
+    expect(out).toMatch(/showing 2 of 6 matches/);
+  });
+
+  it("search does NOT print the truncation line when everything fits", async () => {
+    await run("add", "--title", "solo widget", "--summary", "s", "--body", "b");
+    out = "";
+    await run("search", "solo widget");
+    expect(out).not.toMatch(/showing \d+ of/);
+  });
+
+  it("prune --vacuum preserves all lore rows (GC doesn't lose data)", async () => {
+    await run("add", "--title", "keep me one", "--summary", "s", "--body", "b");
+    await run("add", "--title", "keep me two", "--summary", "s", "--body", "b");
+    out = "";
+    expect(await run("prune", "--read-events-older-than", "0", "--vacuum")).toBe(0);
+    out = "";
+    await run("search", "keep me");
+    expect(out).toContain("keep me one");
+    expect(out).toContain("keep me two");
+  });
+});
+
+describe("CLI — boundary review (non-TTY list mode)", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+  });
+
+  it("boundary review falls back to a list under non-TTY stdin", async () => {
+    await run("boundary", "suggest", "svc", "thing", "provides");
+    out = "";
+    // stdin is non-TTY under vitest, so review prints the list and returns 0
+    // rather than blocking on a prompt.
+    expect(await run("boundary", "review")).toBe(0);
+    expect(out).toContain("awaiting review");
+    expect(out).toContain("svc");
+  });
+
+  it("boundary review reports an empty queue cleanly", async () => {
+    expect(await run("boundary", "review")).toBe(0);
+    expect(out).toContain("no pending boundary drafts");
+  });
+});
+
+describe("CLI — cross-repo sync pull aggregates the boundary map", () => {
+  it("two repos export edges; sync pull merges them; impact joins across spellings", async () => {
+    const ordersDb = join(dir, "orders.db");
+    const reportingDb = join(dir, "reporting.db");
+    const centralDb = join(dir, "central.db");
+    const ordersRepo = join(dir, "orders-svc");
+    const reportingRepo = join(dir, "reporting-svc");
+
+    // orders-svc provides OrderSubmitted (camelCase).
+    process.env["LOREGUARD_DB"] = ordersDb;
+    await run("init");
+    await run("boundary", "add", "orders-svc", "OrderSubmitted", "provides", "--kind", "event");
+    await run("sync", "export", join(ordersRepo, ".loreguard"));
+
+    // reporting-svc consumes order-submitted (kebab).
+    process.env["LOREGUARD_DB"] = reportingDb;
+    await run("init");
+    await run("boundary", "add", "reporting-svc", "order-submitted", "consumes");
+    await run("sync", "export", join(reportingRepo, ".loreguard"));
+
+    // Central machine pulls everything under dir.
+    process.env["LOREGUARD_DB"] = centralDb;
+    await run("init");
+    out = "";
+    expect(await run("sync", "pull", dir)).toBe(0);
+    expect(out).toMatch(/boundary edge/);
+
+    // The map joins the two spellings into one contract.
+    out = "";
+    expect(await run("impact", "order_submitted")).toBe(0);
+    expect(out).toContain("orders-svc");
+    expect(out).toContain("reporting-svc");
+    expect(out).toMatch(/Providers.*1/s);
+    expect(out).toMatch(/Consumers.*1/s);
+  });
+});

@@ -79,6 +79,24 @@ itself is pre-1.0 so semver promises are best-effort.
   `main(argv)` end-to-end against a temp DB — exit codes, flag-conflict
   refusals, and the add/search/show/review lifecycle — plus pure-helper
   coverage for `--from-commit` parsing and commit-URL derivation.
+- **MCP server end-to-end suite (`test/mcp-server.test.ts`).** Drives the
+  real server (new exported `buildMcpServer(db)`) through an in-memory
+  transport and a real MCP `Client`, exercising every tool handler with
+  its actual zod schema, env gates, redaction, and response shaping —
+  the agent-facing layer that previously had only pure-helper coverage.
+- **Direct unit suites for the previously-untested pure modules:** the
+  flag parser (`args`), CLI renderers (`format`), id generator (`ids`),
+  the agent retrieval rule (`instructions`), and `doctor` health checks.
+- Deeper coverage for boundaries (lifecycle events, id-collision import,
+  repo/role filters), trust ranking (multi-signal ordering, non-FTS
+  recency), the audit log (timestamp, append, blocked field, AUDIT_OFF),
+  and a full cross-repo `sync pull` → `impact` integration through the
+  CLI. Suite grew from 314 to 479 tests.
+
+### Internal
+
+- `runMcpServer` split into a thin stdio shell plus an exported,
+  testable `buildMcpServer(db)` that wires the tools onto a given DB.
 
 ### Fixed
 

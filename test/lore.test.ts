@@ -547,6 +547,45 @@ describe("core/lore", () => {
       expect(hits.find((h) => h.id === stale.id)!.stale).toBe(true);
     });
 
+    it("ranks the most-trusted record first when several share the query token", () => {
+      // Same matching token, ascending trust: sourceless-low, sourceless-medium,
+      // sourced-high. The sourced-high record should lead.
+      addLore(db, { title: "cache invalidation low", summary: "s", body: "b", confidence: "low" });
+      addLore(db, { title: "cache invalidation medium", summary: "s", body: "b" });
+      const best = addLore(db, {
+        title: "cache invalidation high",
+        summary: "s",
+        body: "b",
+        source: "https://example.com/c",
+        confidence: "high",
+      });
+      const hits = searchLore(db, { query: "cache invalidation" });
+      expect(hits[0]!.id).toBe(best.id);
+    });
+
+    it("a non-FTS (no query) listing is NOT trust-reranked — pure recency", () => {
+      // Without a query, order is updated_at desc regardless of trust.
+      const older = addLore(db, {
+        title: "older high",
+        summary: "s",
+        body: "b",
+        source: "https://example.com/o",
+        confidence: "high",
+      });
+      // Backdate the high-trust record so recency is unambiguous (same-ms
+      // inserts would otherwise tie and the order would be arbitrary).
+      db.prepare("UPDATE lore SET updated_at = ? WHERE id = ?").run(
+        "2000-01-01T00:00:00.000Z",
+        older.id,
+      );
+      const newer = addLore(db, { title: "newer low", summary: "s", body: "b", confidence: "low" });
+      const hits = searchLore(db, { includeRestricted: true });
+      // newer first despite being lower trust (no query → recency only),
+      // and the backdated high-trust record sorts last.
+      expect(hits[0]!.id).toBe(newer.id);
+      expect(hits[hits.length - 1]!.id).toBe(older.id);
+    });
+
     it("does not override a clearly stronger lexical match", () => {
       // The exact-title match (strong bm25) should still win even though
       // it's low-trust, because the trust delta is small relative to a

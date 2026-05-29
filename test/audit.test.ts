@@ -6,7 +6,7 @@
  * audit module directly (not via the live MCP server, which requires
  * a stdio harness) and assert on the JSONL produced.
  */
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -78,5 +78,56 @@ describe("audit log boundary", () => {
     });
     const line = readFileSync(tmpPath, "utf8").trim();
     expect(line).not.toMatch(/"body"\s*:/);
+  });
+
+  it("stamps each record with an ISO timestamp", async () => {
+    const { audit } = await freshAudit();
+    audit({ tool: "search_lore", request: { query: "x" }, resultCount: 0 });
+    const row = JSON.parse(readFileSync(tmpPath, "utf8").trim());
+    expect(row.ts).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+    expect(Number.isNaN(Date.parse(row.ts))).toBe(false);
+  });
+
+  it("appends one JSONL line per call (does not overwrite)", async () => {
+    const { audit } = await freshAudit();
+    audit({ tool: "search_lore", request: { query: "a" }, resultCount: 1 });
+    audit({ tool: "get_lore", request: { id: "abc12345" }, resultCount: 1 });
+    audit({ tool: "search_lore", request: { query: "b" }, resultCount: 0 });
+    const lines = readFileSync(tmpPath, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0]!).tool).toBe("search_lore");
+    expect(JSON.parse(lines[1]!).tool).toBe("get_lore");
+  });
+
+  it("records the `blocked` field for a gated refusal", async () => {
+    const { audit } = await freshAudit();
+    audit({
+      tool: "get_lore",
+      request: { id: "abc12345" },
+      resultCount: 1,
+      resultIds: ["abc12345"],
+      blocked: "restricted",
+    });
+    const row = JSON.parse(readFileSync(tmpPath, "utf8").trim());
+    expect(row.blocked).toBe("restricted");
+  });
+
+  it("writes nothing when LOREGUARD_AUDIT_OFF is set", async () => {
+    process.env["LOREGUARD_AUDIT_OFF"] = "1";
+    const { audit } = await freshAudit();
+    audit({ tool: "search_lore", request: { query: "x" }, resultCount: 0 });
+    expect(existsSync(tmpPath)).toBe(false);
+  });
+
+  it("an `error` audit row carries the message but never a body", async () => {
+    const { audit } = await freshAudit();
+    audit({
+      tool: "suggest_lore",
+      request: { title: "t", bodyChars: 5 },
+      error: "summary_too_long: 900 chars exceeds cap 800",
+    });
+    const row = JSON.parse(readFileSync(tmpPath, "utf8").trim());
+    expect(row.error).toContain("summary_too_long");
+    expect("body" in row.request).toBe(false);
   });
 });

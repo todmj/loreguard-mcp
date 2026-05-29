@@ -96,6 +96,27 @@ export async function runMcpServer(): Promise<void> {
     return;
   }
 
+  const server = buildMcpServer(db);
+
+  // Connect on stdio. The MCP client (Claude Code, Cursor, etc.) is the
+  // parent process; we read JSON-RPC framed messages on stdin, reply on
+  // stdout. Logs go to stderr.
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  // Block forever — connect() returns once the transport is bound; the
+  // server runs as long as stdin stays open. Closing stdin (client
+  // disconnect) exits the process.
+}
+
+/**
+ * Wire all loreguard MCP tools onto a fresh `McpServer` backed by the
+ * given database. Split out of `runMcpServer` so tests can drive the
+ * real server (and its real handlers, redaction gates, and audit calls)
+ * over an in-memory transport against a temp DB — no stdio subprocess,
+ * no production `~/.loreguard` paths. `runMcpServer` is the thin shell:
+ * open the default DB, build, connect stdio.
+ */
+export function buildMcpServer(db: Database): McpServer {
   const server = new McpServer({
     name: "loreguard",
     version: "0.1.1",
@@ -1081,12 +1102,5 @@ export async function runMcpServer(): Promise<void> {
     },
   );
 
-  // Connect on stdio. The MCP client (Claude Code, Cursor, etc.) is the
-  // parent process; we read JSON-RPC framed messages on stdin, reply on
-  // stdout. Logs go to stderr.
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  // Block forever — connect() returns once the transport is bound; the
-  // server runs as long as stdin stays open. Closing stdin (client
-  // disconnect) exits the process.
+  return server;
 }

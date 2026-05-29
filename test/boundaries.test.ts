@@ -282,4 +282,86 @@ describe("export / import round-trip (cross-repo convergence)", () => {
       }),
     ).toBe("skipped");
   });
+
+  it("mints a fresh id when the incoming id is malformed or collides", () => {
+    const central = newDb();
+    // Pre-existing edge with id "aaaa2222".
+    const seed = addBoundary(central, { repo: "x", contract: "seed", role: "provides" });
+    // Incoming record with a malformed id → should still import (new id).
+    expect(
+      importBoundary(central, {
+        id: "NOT-A-VALID-ID",
+        repo: "svc",
+        contract: "c",
+        role: "consumes",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toBe("created");
+    const edge = findDependents(central, "c").consumers[0]!;
+    expect(edge.id).toMatch(/^[a-z2-9]{8}$/);
+    expect(edge.id).not.toBe(seed.id);
+  });
+});
+
+describe("boundary events + edge cases", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+  });
+
+  it("emits boundary lifecycle events into the shared events table", () => {
+    const draft = suggestBoundary(db, { repo: "svc", contract: "c", role: "provides" });
+    approveBoundary(db, draft.id);
+    const active = addBoundary(db, { repo: "svc2", contract: "c2", role: "consumes" });
+    deprecateBoundary(db, active.id);
+    const kinds = (
+      db
+        .prepare("SELECT kind FROM events WHERE lore_id IN (?, ?) ORDER BY rowid")
+        .all(draft.id, active.id) as Array<{ kind: string }>
+    ).map((r) => r.kind);
+    expect(kinds).toContain("boundary_suggested");
+    expect(kinds).toContain("boundary_approved");
+    expect(kinds).toContain("boundary_declared");
+    expect(kinds).toContain("boundary_deprecated");
+  });
+
+  it("normalises the repo (trim) but keeps it case-sensitive", () => {
+    const e = addBoundary(db, { repo: "  Orders-SVC  ", contract: "c", role: "provides" });
+    expect(e.repo).toBe("Orders-SVC");
+  });
+
+  it("treats provides and consumes from the same repo as distinct edges", () => {
+    addBoundary(db, { repo: "gateway", contract: "events", role: "provides" });
+    addBoundary(db, { repo: "gateway", contract: "events", role: "consumes" });
+    const r = findDependents(db, "events");
+    expect(r.providers).toHaveLength(1);
+    expect(r.consumers).toHaveLength(1);
+  });
+
+  it("listContracts excludes draft-only contracts unless includeDrafts", () => {
+    addBoundary(db, { repo: "a", contract: "active-one", role: "provides" });
+    suggestBoundary(db, { repo: "b", contract: "draft-only", role: "consumes" });
+    expect(listContracts(db)).toEqual(["active-one"]);
+    expect(listContracts(db, { includeDrafts: true }).sort()).toEqual([
+      "active-one",
+      "draft-only",
+    ]);
+  });
+
+  it("listBoundaries filters by repo and role", () => {
+    addBoundary(db, { repo: "a", contract: "c1", role: "provides" });
+    addBoundary(db, { repo: "a", contract: "c2", role: "consumes" });
+    addBoundary(db, { repo: "b", contract: "c3", role: "provides" });
+    expect(listBoundaries(db, { repo: "a" })).toHaveLength(2);
+    expect(listBoundaries(db, { role: "provides" })).toHaveLength(2);
+    expect(listBoundaries(db, { repo: "a", role: "consumes" })).toHaveLength(1);
+  });
+
+  it("approveBoundary / deprecateBoundary / rejectBoundary return null/false on unknown id", () => {
+    expect(approveBoundary(db, "zzzzzzzz")).toBeNull();
+    expect(deprecateBoundary(db, "zzzzzzzz")).toBeNull();
+    expect(rejectBoundary(db, "zzzzzzzz")).toBe(false);
+  });
 });
