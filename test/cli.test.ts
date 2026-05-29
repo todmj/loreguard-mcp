@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { main } from "../src/cli/index.js";
+import { VERSION } from "../src/version.js";
 
 let dir: string;
 let out: string;
@@ -93,7 +94,8 @@ describe("CLI dispatch — basics", () => {
     expect(out).toContain("loreguard <command>");
     out = "";
     expect(await run("--version")).toBe(0);
-    expect(out.trim()).toBe("0.1.1");
+    expect(out.trim()).toBe(VERSION);
+    expect(out.trim()).toMatch(/^\d+\.\d+\.\d+/); // and it's a real semver
   });
 
   it("unknown command exits 2 and prints help to stderr", async () => {

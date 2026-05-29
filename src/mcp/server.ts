@@ -33,6 +33,7 @@ import {
   LENGTH_CAPS,
 } from "./validation.js";
 import type { Boundary } from "../db/types.js";
+import { VERSION } from "../version.js";
 
 /**
  * Compact boundary projection for MCP responses — repo / role / contract
@@ -119,7 +120,7 @@ export async function runMcpServer(): Promise<void> {
 export function buildMcpServer(db: Database): McpServer {
   const server = new McpServer({
     name: "loreguard",
-    version: "0.1.1",
+    version: VERSION,
   });
 
   // ---- search_lore -----------------------------------------------------

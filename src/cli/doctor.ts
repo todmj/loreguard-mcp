@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { openDb, defaultDbPath } from "../db/index.js";
+import { VERSION } from "../version.js";
 
 interface Check {
   readonly label: string;
@@ -29,8 +30,7 @@ function checkFileMode(path: string, required: number): Check["level"] {
 }
 
 function pkgVersion(): string {
-  // Static for v0.1; reads from a bundled JSON in a later release.
-  return "0.1.1";
+  return VERSION;
 }
 
 export async function runDoctor(): Promise<{ exitCode: number; checks: Check[] }> {

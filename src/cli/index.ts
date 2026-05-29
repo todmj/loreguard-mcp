@@ -66,6 +66,7 @@ import {
   skillDestPath,
 } from "./setup.js";
 import { exportToDir, findLoreguardDirs, importFromDir } from "./sync.js";
+import { VERSION } from "../version.js";
 
 const HELP = `loreguard — reviewed project memory for AI coding agents
 
@@ -2387,8 +2388,7 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
     return 0;
   }
   if (rest[0] === "--version" || rest[0] === "-v") {
-    // Static for now — populated from package.json at build time later.
-    process.stdout.write("0.1.1\n");
+    process.stdout.write(VERSION + "\n");
     return 0;
   }
   const [cmd, ...subArgs] = rest;

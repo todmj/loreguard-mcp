@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDb } from "../src/db/index.js";
 import { renderDoctor, runDoctor } from "../src/cli/doctor.js";
+import { VERSION } from "../src/version.js";
 
 let dir: string;
 const ENV = [
@@ -59,7 +60,7 @@ describe("runDoctor", () => {
     expect(text).toContain("DB exists");
     expect(text).toContain("FTS index: ready");
     expect(text).toContain("Lore table: 0 record(s)");
-    expect(text).toContain("Version: 0.1.1");
+    expect(text).toContain(`Version: ${VERSION}`);
   });
 
   it("warns when the restricted-MCP gate is enabled", async () => {
