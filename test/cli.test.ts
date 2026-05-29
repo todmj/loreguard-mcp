@@ -1,0 +1,262 @@
+/**
+ * CLI dispatcher integration tests. The `core/*` layer is unit-tested
+ * heavily elsewhere; this file pins the surface a user actually hits —
+ * `main(argv)` end-to-end against a real (temp) SQLite DB: exit codes,
+ * flag-conflict refusals, lifecycle commands, and stdout/stderr shape.
+ *
+ * We drive `main(["node", "loreguard", ...args])` (it skips argv[0..1])
+ * and capture writes by patching process.stdout / process.stderr. Each
+ * test gets its own DB via LOREGUARD_DB; audit + telemetry are silenced.
+ */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { main } from "../src/cli/index.js";
+
+let dir: string;
+let out: string;
+let err: string;
+let outSpy: ReturnType<typeof vi.spyOn>;
+let errSpy: ReturnType<typeof vi.spyOn>;
+
+const prevEnv: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "loreguard-cli-"));
+  for (const k of [
+    "LOREGUARD_DB",
+    "LOREGUARD_AUDIT_OFF",
+    "LOREGUARD_AUDIT_LOG",
+    "LOREGUARD_NO_TELEMETRY",
+  ]) {
+    prevEnv[k] = process.env[k];
+  }
+  process.env["LOREGUARD_DB"] = join(dir, "lore.db");
+  process.env["LOREGUARD_AUDIT_OFF"] = "1";
+  out = "";
+  err = "";
+  outSpy = vi
+    .spyOn(process.stdout, "write")
+    .mockImplementation((chunk: string | Uint8Array) => {
+      out += chunk.toString();
+      return true;
+    });
+  errSpy = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation((chunk: string | Uint8Array) => {
+      err += chunk.toString();
+      return true;
+    });
+});
+
+afterEach(() => {
+  outSpy.mockRestore();
+  errSpy.mockRestore();
+  for (const [k, v] of Object.entries(prevEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/** Run a loreguard command; returns the exit code. stdout/stderr land in out/err. */
+async function run(...args: string[]): Promise<number> {
+  return main(["node", "loreguard", ...args]);
+}
+
+/** Pull the first 8-char id printed (from `add`/`suggest` output). */
+function firstId(s: string): string {
+  const m = /\b([a-z2-9]{8})\b/.exec(s);
+  if (!m) throw new Error(`no id found in: ${s}`);
+  return m[1]!;
+}
+
+describe("CLI dispatch — basics", () => {
+  it("--help and --version short-circuit with code 0", async () => {
+    expect(await run("--help")).toBe(0);
+    expect(out).toContain("loreguard <command>");
+    out = "";
+    expect(await run("--version")).toBe(0);
+    expect(out.trim()).toBe("0.1.1");
+  });
+
+  it("unknown command exits 2 and prints help to stderr", async () => {
+    expect(await run("frobnicate")).toBe(2);
+    expect(err).toContain("unknown command 'frobnicate'");
+  });
+
+  it("init creates the DB and reports the path", async () => {
+    expect(await run("init")).toBe(0);
+    expect(out).toContain("initialised at");
+  });
+});
+
+describe("CLI — add / search / show lifecycle", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+  });
+
+  it("add creates an active record findable by search; show prints the body", async () => {
+    expect(
+      await run(
+        "add",
+        "--title",
+        "Argon2id is the hash default",
+        "--summary",
+        "Platform ruling",
+        "--body",
+        "Use m=64MB t=3 p=4",
+        "--source",
+        "https://example.com/adr/1",
+        "--confidence",
+        "high",
+      ),
+    ).toBe(0);
+    const id = firstId(out);
+    out = "";
+
+    expect(await run("search", "argon2id")).toBe(0);
+    expect(out).toContain("Argon2id is the hash default");
+    out = "";
+
+    expect(await run("show", id)).toBe(0);
+    expect(out).toContain("Use m=64MB t=3 p=4"); // body present in show
+  });
+
+  it("search with no matches prints a friendly message, code 0", async () => {
+    expect(await run("search", "nonexistent-topic-xyz")).toBe(0);
+    expect(out).toContain("no matches");
+  });
+
+  it("show with an unknown id exits 1", async () => {
+    expect(await run("show", "zzzzzzzz")).toBe(1);
+    expect(err).toContain("no record with id");
+  });
+
+  it("show with no id exits 2", async () => {
+    expect(await run("show")).toBe(2);
+  });
+});
+
+describe("CLI — draft review flow", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+  });
+
+  it("suggest lands as a draft, hidden from default search until approved", async () => {
+    await run("suggest", "--title", "Draft rule", "--summary", "s", "--body", "b");
+    const id = firstId(out);
+    out = "";
+    // Draft excluded from default search.
+    await run("search", "Draft rule");
+    expect(out).not.toContain("Draft rule");
+    out = "";
+    // approve → now active and findable.
+    expect(await run("approve", id)).toBe(0);
+    out = "";
+    await run("search", "Draft rule");
+    expect(out).toContain("Draft rule");
+  });
+
+  it("reject refuses a non-draft (active) record, exits 1", async () => {
+    await run("add", "--title", "Active rec", "--summary", "s", "--body", "b");
+    const id = firstId(out);
+    out = "";
+    err = "";
+    expect(await run("reject", id)).toBe(1);
+    expect(err).toContain("not a draft");
+  });
+
+  it("review --list shows pending drafts", async () => {
+    await run("suggest", "--title", "Pending one", "--summary", "s", "--body", "b");
+    out = "";
+    expect(await run("review", "--list")).toBe(0);
+    expect(out).toContain("Pending one");
+    expect(out).toContain("awaiting review");
+  });
+});
+
+describe("CLI — update flag-conflict refusals", () => {
+  let id: string;
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+    await run("add", "--title", "Editable", "--summary", "s", "--body", "b");
+    id = firstId(out);
+    out = "";
+    err = "";
+  });
+
+  it("--clear-source conflicts with --source, exits 2", async () => {
+    expect(
+      await run("update", id, "--clear-source", "--source", "https://x.example.com"),
+    ).toBe(2);
+    expect(err).toContain("--clear-source conflicts with --source");
+  });
+
+  it("--clear-tags conflicts with --tag, exits 2", async () => {
+    expect(await run("update", id, "--clear-tags", "--tag", "foo")).toBe(2);
+    expect(err).toContain("--clear-tags conflicts with --tag");
+  });
+
+  it("update with no field flags exits 2", async () => {
+    expect(await run("update", id)).toBe(2);
+    expect(err).toContain("at least one field flag");
+  });
+
+  it("a valid update succeeds and is reflected in show", async () => {
+    expect(await run("update", id, "--summary", "new summary text")).toBe(0);
+    out = "";
+    await run("show", id);
+    expect(out).toContain("new summary text");
+  });
+});
+
+describe("CLI — prune", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+  });
+
+  it("prune --dry-run reports counts and writes nothing", async () => {
+    expect(await run("prune", "--dry-run")).toBe(0);
+    expect(out).toContain("dry-run");
+    expect(out).toMatch(/would delete \d+ read event/);
+  });
+
+  it("prune rejects a bad --read-events-older-than, exits 2", async () => {
+    expect(await run("prune", "--read-events-older-than", "notanumber")).toBe(2);
+    expect(err).toContain("non-negative integer");
+  });
+
+  it("prune runs and reports deletions, exits 0", async () => {
+    expect(await run("prune")).toBe(0);
+    expect(out).toContain("deleted");
+  });
+});
+
+describe("CLI — absent record/list", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+  });
+
+  it("records a marker and lists it; requires --reason", async () => {
+    err = "";
+    expect(await run("absent", "record", "retry policy")).toBe(2);
+    expect(err).toContain("requires --reason");
+    out = "";
+    expect(
+      await run("absent", "record", "retry policy", "--reason", "no team policy"),
+    ).toBe(0);
+    expect(out).toContain("recorded absence marker");
+    out = "";
+    expect(await run("absent", "list")).toBe(0);
+    expect(out).toContain("no team policy");
+  });
+});

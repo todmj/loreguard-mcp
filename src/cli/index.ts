@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 import {
   findActiveAbsence,
@@ -68,6 +68,12 @@ COMMANDS
                             unless --title is given.
   suggest                   Same as add but lands as a draft. Used by agents;
                             also handy when you want to triage later.
+  suggest --from-commit <sha>
+                            Draft a record straight from a commit message
+                            (subject -> title, body -> summary/detail).
+                            Auto-derives a commit permalink as the source
+                            from remote.origin.url. Lands as a draft;
+                            promote via review. --repo/--tag/--source apply.
   search <query...>         Full-text search. Returns brief summaries.
                             Flags: --repo, --tag (repeatable for ANY-of),
                             --prefix (match tokens of 3+ chars as
@@ -315,6 +321,115 @@ async function cmdAdd(args: ReturnType<typeof parseArgs>, asDraft: boolean): Pro
             `  ${d.id}  [${d.status}]${restrictedTag}  ${d.title}\n    reason: ${d.reason}\n`,
           );
         }
+      }
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `loreguard suggest --from-commit <sha>` — draft a record straight from a
+ * commit message. Closes the "I wrote the rationale in the commit, why
+ * retype it" gap (PRINCIPLES.md §6). Lands as a DRAFT like every other
+ * agent-shaped capture; the reviewer promotes via `loreguard review`.
+ *
+ * Source URL is auto-derived from the commit + `remote.origin.url` so the
+ * draft carries provenance (and clears `medium` confidence) without the
+ * user pasting a permalink. `--repo`/`--tag` layer on as usual; `--source`
+ * overrides the auto-derived URL.
+ */
+async function cmdSuggestFromCommit(
+  args: ReturnType<typeof parseArgs>,
+  sha: string,
+): Promise<number> {
+  const {
+    commitToDraftFields,
+    commitUrlFromRemote,
+    FIELD_SEP,
+    parseCommitShow,
+  } = await import("./commit.js");
+  let raw: string;
+  try {
+    // execFileSync (no shell) so the sha can't be shell-injected and the
+    // field separator survives intact as a literal arg.
+    raw = execFileSync(
+      "git",
+      ["show", "-s", `--format=%H${FIELD_SEP}%s${FIELD_SEP}%b`, sha],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    ).toString();
+  } catch {
+    process.stderr.write(
+      `loreguard: couldn't read commit '${sha}' — is this a git repo and a valid ref?\n`,
+    );
+    return 1;
+  }
+  const commit = parseCommitShow(raw);
+  if (!commit) {
+    process.stderr.write(`loreguard: commit '${sha}' produced no usable message\n`);
+    return 1;
+  }
+  // Source precedence: explicit --source wins; else derive a commit
+  // permalink from the remote (best-effort, may be null for local repos).
+  const explicitSource = getString(args.flags, "source");
+  let source: string | null = explicitSource ?? null;
+  if (!source) {
+    try {
+      const remote = execSync("git config --get remote.origin.url", {
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim();
+      source = commitUrlFromRemote(remote, commit.sha);
+    } catch {
+      source = null;
+    }
+  }
+  const fields = commitToDraftFields(commit, source);
+  const repos = getStringArray(args.flags, "repo");
+  const tags = getStringArray(args.flags, "tag");
+  // Auto-detect repo when none given, matching the induct/ingest ladder.
+  const finalRepos =
+    repos.length > 0
+      ? repos
+      : (() => {
+          const det = detectRepoName();
+          return det ? [det.name] : [];
+        })();
+
+  const db = openDb();
+  try {
+    const lore = suggestLore(db, {
+      title: fields.title,
+      summary: fields.summary,
+      body: fields.body,
+      repos: finalRepos.length > 0 ? finalRepos : undefined,
+      tags,
+      source: fields.source,
+      confidence: fields.confidence,
+      author: "from-commit",
+    });
+    process.stdout.write(
+      `loreguard: suggested ${lore.id} (draft) from commit ${commit.sha.slice(0, 12)}\n` +
+        `  ${lore.title}\n` +
+        (fields.source ? `  source: ${fields.source}\n` : "") +
+        `Review with \`loreguard review\` (or \`loreguard show ${lore.id}\`).\n`,
+    );
+    const { duplicates } = findPossibleDuplicates(
+      db,
+      { id: lore.id, title: fields.title, repos: finalRepos, tags },
+      { allowRestricted: true },
+    );
+    if (duplicates.length > 0) {
+      process.stdout.write(
+        `Possible duplicates (review with \`loreguard show <id>\`):\n`,
+      );
+      for (const d of duplicates) {
+        const restrictedTag = d.restricted ? " [restricted]" : "";
+        process.stdout.write(
+          `  ${d.id}  [${d.status}]${restrictedTag}  ${d.title}\n    reason: ${d.reason}\n`,
+        );
       }
     }
     return 0;
@@ -2018,8 +2133,11 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdInit();
       case "add":
         return await cmdAdd(parsed, false);
-      case "suggest":
+      case "suggest": {
+        const fromCommit = getString(parsed.flags, "from-commit");
+        if (fromCommit) return await cmdSuggestFromCommit(parsed, fromCommit);
         return await cmdAdd(parsed, true);
+      }
       case "search":
         return await cmdSearch(parsed);
       case "show":

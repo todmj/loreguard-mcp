@@ -434,6 +434,23 @@ Argon2id with m=64MB, t=3, p=4 is the new baseline." \
 
 Records added by humans default to `status: active` — visible to search.
 
+### Capture from a commit — `loreguard suggest --from-commit`
+
+If you already wrote the rationale in a commit message, don't retype it:
+
+```bash
+loreguard suggest --from-commit HEAD
+loreguard suggest --from-commit a4f12c0 --repo payments-svc --tag migrations
+```
+
+The commit subject becomes the draft title, the first body paragraph
+the summary, and the full message the body. A commit permalink is
+auto-derived from `remote.origin.url` and stored as the `source` (so the
+draft clears `medium` confidence) — pass `--source` to override, or
+`--repo` / `--tag` to scope it. Like every agent-shaped capture it lands
+as a **draft**; promote it in `loreguard review`. This is one of the
+cheapest ways to grow a corpus from work you've already done.
+
 ## What deserves lore?
 
 Lore is most useful when it's small and high-signal. The whole point of

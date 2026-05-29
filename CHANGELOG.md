@@ -35,6 +35,19 @@ itself is pre-1.0 so semver promises are best-effort.
   and expired absence markers; `--vacuum` reclaims disk, `--dry-run`
   reports counts. Lifecycle events are never touched. Closes the
   unbounded-growth leak on `events` from per-hit read tracking.
+- **`loreguard suggest --from-commit <sha>`.** Drafts a record straight
+  from a commit message (subject → title, first body paragraph →
+  summary, full message → body) and auto-derives a commit permalink as
+  the source from `remote.origin.url`. Closes the "I wrote the rationale
+  in the commit, why retype it" capture gap (PRINCIPLES.md §6). Lands as
+  a DRAFT; the reviewer promotes via `loreguard review`.
+
+### Tests
+
+- Added a CLI dispatcher integration suite (`test/cli.test.ts`) driving
+  `main(argv)` end-to-end against a temp DB — exit codes, flag-conflict
+  refusals, and the add/search/show/review lifecycle — plus pure-helper
+  coverage for `--from-commit` parsing and commit-URL derivation.
 
 ### Fixed
 
