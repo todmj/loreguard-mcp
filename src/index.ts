@@ -22,6 +22,7 @@ export {
   listRecent,
   listRepos,
   listTags,
+  pruneReadEvents,
   rejectLore,
   searchLore,
   searchLoreCount,

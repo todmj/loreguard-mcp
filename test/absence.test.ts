@@ -18,6 +18,7 @@ import {
   findActiveAbsence,
   listAbsences,
   normaliseAbsenceQuery,
+  pruneExpiredAbsences,
   recordAbsence,
 } from "../src/core/absence.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -264,5 +265,37 @@ describe("listAbsences", () => {
     expect(
       listAbsences(db, { includeExpired: true }).map((m) => m.query).sort(),
     ).toEqual(["new", "old"]);
+  });
+});
+
+describe("pruneExpiredAbsences", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+  });
+
+  it("hard-deletes only expired markers; keeps active ones", () => {
+    const expired = recordAbsence(db, {
+      query: "old",
+      reason: "ancient",
+      recordedBy: "human",
+    });
+    db.prepare(
+      "UPDATE absence_markers SET expires_at = ? WHERE id = ?",
+    ).run("2020-01-01T00:00:00.000Z", expired.id);
+    recordAbsence(db, { query: "fresh", reason: "live", recordedBy: "human" });
+
+    const deleted = pruneExpiredAbsences(db);
+    expect(deleted).toBe(1);
+    // The active marker survives; the expired one is gone even with
+    // includeExpired (it was hard-deleted, not just filtered).
+    expect(
+      listAbsences(db, { includeExpired: true }).map((m) => m.query),
+    ).toEqual(["fresh"]);
+  });
+
+  it("returns 0 when nothing is expired", () => {
+    recordAbsence(db, { query: "a", reason: "x", recordedBy: "human" });
+    expect(pruneExpiredAbsences(db)).toBe(0);
   });
 });

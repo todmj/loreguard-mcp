@@ -6,6 +6,7 @@ import { execSync } from "node:child_process";
 import {
   findActiveAbsence,
   listAbsences,
+  pruneExpiredAbsences,
   recordAbsence,
 } from "../core/absence.js";
 import { defaultDbPath, openDb } from "../db/index.js";
@@ -22,6 +23,7 @@ import {
   listRecent,
   listRepos,
   listTags,
+  pruneReadEvents,
   rejectLore,
   searchLore,
   searchLoreCount,
@@ -176,6 +178,12 @@ COMMANDS
                             zero reads in N days), recent activity.
                             Opt out of read tracking via
                             LOREGUARD_NO_TELEMETRY=1.
+  prune [--read-events-older-than N] [--vacuum] [--dry-run]
+                            Local-DB GC. Deletes 'read' audit events
+                            older than N days (default 90; lifecycle
+                            events are never touched) and expired
+                            absence markers. --vacuum reclaims disk
+                            after; --dry-run reports counts only.
   ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run] [--include-intent-files]
                             Bulk-import drafts from **clean knowledge
                             docs** (ADRs, SECURITY.md, MIGRATION.md,
@@ -1530,6 +1538,81 @@ async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
+/**
+ * `loreguard prune` — local-DB GC. Two leaks accumulate forever without
+ * this: `read` audit events (one per search/get result) and expired
+ * absence markers. Neither affects correctness (stats windows are
+ * bounded; expired markers are already filtered out), but on a busy
+ * multi-agent install the row count climbs indefinitely.
+ *
+ *   --read-events-older-than N   delete 'read' events older than N days
+ *                                (default 90 — matches the stats window,
+ *                                so nothing stats would show is lost)
+ *   --vacuum                     reclaim disk after deletes (VACUUM)
+ *   --dry-run                    report what would be deleted, write nothing
+ */
+async function cmdPrune(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const rawDays = getString(args.flags, "read-events-older-than");
+  let readDays = 90;
+  if (rawDays !== undefined) {
+    const n = Number(rawDays);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+      process.stderr.write(
+        `loreguard prune: --read-events-older-than must be a non-negative integer (got ${JSON.stringify(rawDays)})\n`,
+      );
+      return 2;
+    }
+    readDays = n;
+  }
+  const vacuum = getBool(args.flags, "vacuum");
+  const dryRun = getBool(args.flags, "dry-run");
+
+  const db = openDb();
+  try {
+    if (dryRun) {
+      const cutoff = new Date(
+        Date.now() - readDays * 86_400_000,
+      ).toISOString();
+      const reads = (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM events WHERE kind = 'read' AND ts < ?",
+          )
+          .get(cutoff) as { n: number }
+      ).n;
+      const markers = (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM absence_markers WHERE expires_at <= ?",
+          )
+          .get(new Date().toISOString()) as { n: number }
+      ).n;
+      process.stdout.write(
+        `loreguard prune (dry-run):\n` +
+          `  would delete ${reads} read event(s) older than ${readDays} days\n` +
+          `  would delete ${markers} expired absence marker(s)\n` +
+          (vacuum ? `  would VACUUM after deletes\n` : "") +
+          `  (dry-run — nothing written)\n`,
+      );
+      return 0;
+    }
+    const reads = pruneReadEvents(db, readDays);
+    const markers = pruneExpiredAbsences(db);
+    process.stdout.write(
+      `loreguard prune: deleted ${reads} read event(s) older than ${readDays} days, ${markers} expired absence marker(s)\n`,
+    );
+    if (vacuum) {
+      // VACUUM can't run inside a transaction; openDb doesn't hold one
+      // open here. Reclaims pages freed by the deletes above.
+      db.exec("VACUUM");
+      process.stdout.write("loreguard prune: reclaimed free pages (VACUUM)\n");
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<number> {
   const {
     evidenceForRecord,
@@ -1980,6 +2063,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdAbsent(parsed);
       case "stats":
         return await cmdStats(parsed);
+      case "prune":
+        return await cmdPrune(parsed);
       case "ingest-md":
         return await cmdIngestMd(parsed);
       case "hooks":

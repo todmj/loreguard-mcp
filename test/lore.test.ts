@@ -14,6 +14,7 @@ import {
   listRecent,
   listRepos,
   listTags,
+  pruneReadEvents,
   rejectLore,
   searchLore,
   searchLoreCount,
@@ -640,6 +641,48 @@ describe("core/lore", () => {
           .get() as { n: number }
       ).n;
       expect(reads).toBe(0);
+    });
+  });
+
+  describe("pruneReadEvents", () => {
+    function countEvents(kind?: string): number {
+      const sql = kind
+        ? "SELECT COUNT(*) AS n FROM events WHERE kind = ?"
+        : "SELECT COUNT(*) AS n FROM events";
+      const row = (kind
+        ? db.prepare(sql).get(kind)
+        : db.prepare(sql).get()) as { n: number };
+      return row.n;
+    }
+
+    it("deletes only old 'read' events; keeps fresh reads and all lifecycle events", () => {
+      const lore = addLore(db, { title: "tracked", summary: "s", body: "b" });
+      const old = new Date(Date.now() - 200 * 86_400_000).toISOString();
+      const recent = new Date(Date.now() - 1 * 86_400_000).toISOString();
+      const ins = db.prepare(
+        "INSERT INTO events (lore_id, kind, ts) VALUES (?, ?, ?)",
+      );
+      ins.run(lore.id, "read", old);
+      ins.run(lore.id, "read", old);
+      ins.run(lore.id, "read", recent);
+      // A lifecycle event with an OLD ts must survive — only 'read' is pruned.
+      ins.run(lore.id, "approved", old);
+
+      const deleted = pruneReadEvents(db, 90);
+      expect(deleted).toBe(2);
+      expect(countEvents("read")).toBe(1); // the recent read stays
+      expect(countEvents("approved")).toBe(1); // lifecycle untouched
+      // 'created' from addLore also survives.
+      expect(countEvents("created")).toBe(1);
+    });
+
+    it("returns 0 when nothing is old enough", () => {
+      const lore = addLore(db, { title: "x", summary: "s", body: "b" });
+      db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'read', ?)").run(
+        lore.id,
+        new Date().toISOString(),
+      );
+      expect(pruneReadEvents(db, 90)).toBe(0);
     });
   });
 

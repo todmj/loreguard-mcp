@@ -37,7 +37,7 @@ prebuilt binary — no compiler needed on common platforms.
 Verify it landed:
 
 ```bash
-loreguard --version     # → 0.1.0
+loreguard --version     # → 0.1.1
 loreguard doctor
 ```
 
@@ -816,6 +816,27 @@ can confirm at a glance.
 > may include search-query text — that's the lever for understanding
 > *what was asked*; `events` is the lever for *which records pulled
 > weight*. Both stay local.
+
+### Prune — keep the local DB tidy
+
+Read tracking is cheap per-event but unbounded over time: every search
+emits one `read` event per hit, every `get_lore` one per fetch. On a
+busy multi-agent install the `events` table grows indefinitely, and
+expired absence markers pile up (they're filtered from queries but never
+deleted). `loreguard prune` is the local-DB GC:
+
+```bash
+loreguard prune                              # delete read events > 90 days + expired markers
+loreguard prune --read-events-older-than 30  # tighter window
+loreguard prune --vacuum                     # also reclaim disk after deletes
+loreguard prune --dry-run                    # report counts, write nothing
+```
+
+Only `kind = 'read'` events are deleted — the lifecycle chain
+(`created / approved / rejected / deprecated / superseded / updated /
+imported`) is never touched, so the audit history stays intact. The
+default 90-day window matches the `stats` citation window, so pruning
+older reads loses nothing `stats` would have shown.
 
 ### Inspect / back up your lore
 

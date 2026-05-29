@@ -30,6 +30,15 @@ itself is pre-1.0 so semver promises are best-effort.
   block and `loreguard search` prints `showing N of M matches`, so the
   caller narrows or raises `limit` instead of assuming the top page is
   the team's complete position.
+- **`loreguard prune` — local-DB GC.** Deletes `read` audit events
+  older than a window (default 90 days, matching the `stats` window)
+  and expired absence markers; `--vacuum` reclaims disk, `--dry-run`
+  reports counts. Lifecycle events are never touched. Closes the
+  unbounded-growth leak on `events` from per-hit read tracking.
+
+### Fixed
+
+- README now reports the correct `loreguard --version` (0.1.1).
 
 ## [0.1.1] — 2026-05-25
 

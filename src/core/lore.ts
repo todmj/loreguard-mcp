@@ -1627,6 +1627,29 @@ export function exportLore(
   );
 }
 
+/**
+ * Delete `read` audit events older than `olderThanDays`. Read events are
+ * emitted one-per-result on every search/get (see `recordRead`), so on a
+ * busy multi-agent install the `events` table grows without bound — these
+ * rows are the dominant churn. Pruning keeps the local DB from being a
+ * slow leak while preserving the lifecycle events (`created`, `approved`,
+ * `rejected`, …) that form the audit chain: only `kind = 'read'` is
+ * touched. Returns the number of rows deleted.
+ *
+ * `stats` windows are bounded (default 90-day citation window), so
+ * pruning reads older than that window doesn't lose anything `stats`
+ * would have shown.
+ */
+export function pruneReadEvents(db: Database, olderThanDays: number): number {
+  const cutoff = new Date(
+    Date.now() - olderThanDays * 86_400_000,
+  ).toISOString();
+  const info = db
+    .prepare("DELETE FROM events WHERE kind = 'read' AND ts < ?")
+    .run(cutoff);
+  return info.changes;
+}
+
 export function listTags(db: Database): string[] {
   return (
     db

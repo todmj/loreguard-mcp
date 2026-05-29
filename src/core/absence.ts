@@ -206,6 +206,19 @@ export function findActiveAbsence(
   return firstMatch(global);
 }
 
+/**
+ * Hard-delete absence markers that have already expired. `findActiveAbsence`
+ * and `listAbsences` already filter on `expires_at > now`, so expired rows
+ * are invisible — but they accumulate forever without this. Returns the
+ * number of rows deleted. Called opportunistically on prune; safe anytime.
+ */
+export function pruneExpiredAbsences(db: Database): number {
+  const info = db
+    .prepare("DELETE FROM absence_markers WHERE expires_at <= ?")
+    .run(nowIso());
+  return info.changes;
+}
+
 export function listAbsences(
   db: Database,
   opts: { includeExpired?: boolean } = {},
