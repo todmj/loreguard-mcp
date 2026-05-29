@@ -169,13 +169,33 @@ export interface AbsenceMarkerForResponse {
 }
 
 /**
- * Pure builder for the `search_lore` response body. Three shapes:
+ * Coaching string attached when results were capped by `limit` and more
+ * matches exist. Tells the agent the set is partial so it narrows
+ * (sharper query, repo/tag filter, or a higher `limit`) rather than
+ * treating the top-N as the team's complete position. Exported so the
+ * unit test can pin the contract.
+ */
+export const SEARCH_TRUNCATED_HINT =
+  "More matches exist than were returned. These are the top-ranked " +
+  "(relevance + trust) hits. If none answers your question, narrow the " +
+  "query, add a `repo`/`tag` filter, or raise `limit` (max 50) — don't " +
+  "assume the team's position is limited to what's shown.";
+
+/**
+ * Pure builder for the `search_lore` response body. Shapes:
  *
  *   - hits present                    → { results }
+ *   - hits present + truncated        → { results, truncated: {...} }
  *   - empty + active marker matched   → { results, absence_marker }
  *   - empty + no marker + has query   → { results, next }
  *   - empty + no marker + no query    → { results } (blank list-recent
  *                                                    has no useful coach)
+ *
+ * `totalMatches` is the unlimited match count (from `searchLoreCount`);
+ * when it exceeds the number of hits shown we attach a `truncated`
+ * block. Omitted / undefined `totalMatches` means "don't know / don't
+ * report" so existing callers and tests keep the bare `{ results }`
+ * shape.
  *
  * Exported so a unit test can pin the contract without spinning up the
  * stdio server.
@@ -184,6 +204,7 @@ export function buildSearchResponseBody<T>(opts: {
   hits: ReadonlyArray<T>;
   query: string | undefined;
   absenceMarker: AbsenceMarkerForResponse | null;
+  totalMatches?: number;
 }): Record<string, unknown> {
   const base: Record<string, unknown> = { results: opts.hits };
   if (opts.absenceMarker) {
@@ -196,6 +217,17 @@ export function buildSearchResponseBody<T>(opts: {
   }
   if (opts.hits.length === 0 && opts.query) {
     base["next"] = SEARCH_NO_HIT_COACH;
+    return base;
+  }
+  if (
+    typeof opts.totalMatches === "number" &&
+    opts.totalMatches > opts.hits.length
+  ) {
+    base["truncated"] = {
+      shown: opts.hits.length,
+      total: opts.totalMatches,
+      hint: SEARCH_TRUNCATED_HINT,
+    };
   }
   return base;
 }

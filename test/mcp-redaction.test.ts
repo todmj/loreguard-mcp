@@ -214,6 +214,65 @@ describe("buildSearchResponseBody", () => {
     expect(r).toEqual({ results: [] });
     expect("next" in r).toBe(false);
   });
+
+  it("hits present + totalMatches > shown → `truncated` block", async () => {
+    const { buildSearchResponseBody, SEARCH_TRUNCATED_HINT } = await import(
+      "../src/mcp/redact.js"
+    );
+    const hits = [{ id: "a" }, { id: "b" }];
+    const r = buildSearchResponseBody({
+      hits,
+      query: "popular topic",
+      absenceMarker: null,
+      totalMatches: 7,
+    });
+    expect(r["results"]).toEqual(hits);
+    expect(r["truncated"]).toEqual({
+      shown: 2,
+      total: 7,
+      hint: SEARCH_TRUNCATED_HINT,
+    });
+  });
+
+  it("hits present + totalMatches === shown → no `truncated` block", async () => {
+    const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    const hits = [{ id: "a" }, { id: "b" }];
+    const r = buildSearchResponseBody({
+      hits,
+      query: "x",
+      absenceMarker: null,
+      totalMatches: 2,
+    });
+    expect("truncated" in r).toBe(false);
+  });
+
+  it("totalMatches omitted → bare `results` (back-compat with existing callers)", async () => {
+    const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    const r = buildSearchResponseBody({
+      hits: [{ id: "a" }],
+      query: "x",
+      absenceMarker: null,
+    });
+    expect(r).toEqual({ results: [{ id: "a" }] });
+  });
+
+  it("truncation is not reported alongside an absence marker (mutually exclusive shapes)", async () => {
+    const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    // Marker only applies on zero hits; with a marker present we return
+    // early and never attach `truncated`.
+    const r = buildSearchResponseBody({
+      hits: [],
+      query: "x",
+      absenceMarker: {
+        reason: "gap",
+        recordedAt: "2026-05-01T00:00:00Z",
+        expiresAt: "2026-05-31T00:00:00Z",
+      },
+      totalMatches: 0,
+    });
+    expect("truncated" in r).toBe(false);
+    expect("absence_marker" in r).toBe(true);
+  });
 });
 
 describe("shouldGateAbsenceWrite", () => {

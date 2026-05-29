@@ -24,6 +24,7 @@ import {
   listTags,
   rejectLore,
   searchLore,
+  searchLoreCount,
   supersedeLore,
   suggestLore,
   updateLore,
@@ -333,7 +334,7 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
   const prefix = getBool(args.flags, "prefix");
   const db = openDb();
   try {
-    const hits = searchLore(db, {
+    const searchOpts = {
       query,
       repo,
       tag,
@@ -344,13 +345,25 @@ async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
       includeDeprecated,
       includeSuperseded,
       includeRestricted,
-    });
+    };
+    const hits = searchLore(db, searchOpts);
     if (hits.length === 0) {
       process.stdout.write("loreguard: no matches\n");
       return 0;
     }
     for (const h of hits) {
       process.stdout.write(renderSummary(h) + "\n\n");
+    }
+    // Tell the human when the list was capped so they can narrow or
+    // raise --limit rather than assume they've seen everything. Only
+    // query the count when we actually hit the cap.
+    if (hits.length >= limit) {
+      const total = searchLoreCount(db, searchOpts);
+      if (total > hits.length) {
+        process.stdout.write(
+          `loreguard: showing ${hits.length} of ${total} matches — narrow the query, add --repo/--tag, or raise --limit (max 50).\n`,
+        );
+      }
     }
     return 0;
   } finally {

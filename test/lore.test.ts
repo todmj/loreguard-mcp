@@ -16,8 +16,10 @@ import {
   listTags,
   rejectLore,
   searchLore,
+  searchLoreCount,
   supersedeLore,
   suggestLore,
+  trustRankAdjustment,
   updateLore,
   verifyLore,
 } from "../src/core/lore.js";
@@ -500,6 +502,144 @@ describe("core/lore", () => {
         addLore(db, { title: `entry-${i}`, summary: "s", body: "b" });
       }
       expect(() => searchLore(db, { limit: 100 })).toThrow(/limit must be/);
+    });
+  });
+
+  describe("searchLore — trust-aware ranking", () => {
+    it("promotes a sourced/high-confidence record over a sourceless near-tie", () => {
+      // Two records with the same matching token in the title so bm25 is
+      // ~equal; trust signals should break the tie toward the trusted one.
+      const trusted = addLore(db, {
+        title: "Kafka retry policy",
+        summary: "s",
+        body: "b",
+        source: "https://example.com/adr/1",
+        confidence: "high",
+      });
+      const untrusted = addLore(db, {
+        title: "Kafka retry policy",
+        summary: "s",
+        body: "b",
+        confidence: "low",
+      });
+      const hits = searchLore(db, { query: "kafka retry policy" });
+      const ids = hits.map((h) => h.id);
+      expect(ids.indexOf(trusted.id)).toBeLessThan(ids.indexOf(untrusted.id));
+      expect(ids).toContain(untrusted.id); // demoted, not dropped
+    });
+
+    it("demotes a stale record below a fresh near-tie", () => {
+      const fresh = addLore(db, {
+        title: "Webhook backoff convention",
+        summary: "s",
+        body: "b",
+      });
+      const stale = addLore(db, {
+        title: "Webhook backoff convention",
+        summary: "s",
+        body: "b",
+        reviewAfter: "2000-01-01T00:00:00.000Z", // long past → stale
+      });
+      const hits = searchLore(db, { query: "webhook backoff convention" });
+      const ids = hits.map((h) => h.id);
+      expect(ids.indexOf(fresh.id)).toBeLessThan(ids.indexOf(stale.id));
+      expect(hits.find((h) => h.id === stale.id)!.stale).toBe(true);
+    });
+
+    it("does not override a clearly stronger lexical match", () => {
+      // The exact-title match (strong bm25) should still win even though
+      // it's low-trust, because the trust delta is small relative to a
+      // big relevance gap.
+      const exact = addLore(db, {
+        title: "Idempotency keys on payment intents",
+        summary: "s",
+        body: "b",
+        confidence: "low",
+      });
+      addLore(db, {
+        title: "Idempotency overview",
+        summary: "s",
+        body: "b",
+        source: "https://example.com/adr/2",
+        confidence: "high",
+      });
+      const [first] = searchLore(db, {
+        query: "idempotency keys on payment intents",
+      });
+      expect(first!.id).toBe(exact.id);
+    });
+  });
+
+  describe("trustRankAdjustment (pure)", () => {
+    const base = {
+      source: "https://example.com/1",
+      confidence: "medium" as const,
+      review_after: null,
+    };
+    it("is 0 for a sourced, medium-confidence, fresh record", () => {
+      expect(trustRankAdjustment(base)).toBe(0);
+    });
+    it("is positive for high confidence (promote)", () => {
+      expect(trustRankAdjustment({ ...base, confidence: "high" })).toBeGreaterThan(0);
+    });
+    it("is negative for low confidence and for no source (demote)", () => {
+      expect(trustRankAdjustment({ ...base, confidence: "low" })).toBeLessThan(0);
+      expect(trustRankAdjustment({ ...base, source: null })).toBeLessThan(0);
+    });
+    it("treats a lapsed review_after as stale (demote)", () => {
+      expect(
+        trustRankAdjustment({ ...base, review_after: "2000-01-01T00:00:00.000Z" }),
+      ).toBeLessThan(0);
+    });
+    it("clamps the combined swing to ±0.5 so it can't flip a clear relevance gap", () => {
+      const worst = trustRankAdjustment({
+        source: null,
+        confidence: "low",
+        review_after: "2000-01-01T00:00:00.000Z",
+      });
+      expect(worst).toBeGreaterThanOrEqual(-0.5);
+    });
+  });
+
+  describe("searchLoreCount", () => {
+    it("counts all matches ignoring limit; matches searchLore filters", () => {
+      for (let i = 0; i < 12; i++) {
+        addLore(db, { title: `widget tracker ${i}`, summary: "s", body: "b" });
+      }
+      const hits = searchLore(db, { query: "widget tracker", limit: 5 });
+      expect(hits.length).toBe(5);
+      expect(searchLoreCount(db, { query: "widget tracker", limit: 5 })).toBe(
+        12,
+      );
+    });
+
+    it("respects status + restricted filters like searchLore", () => {
+      addLore(db, { title: "alpha gizmo", summary: "s", body: "b" });
+      addLore(db, {
+        title: "alpha gizmo restricted",
+        summary: "s",
+        body: "b",
+        restricted: true,
+      });
+      suggestLore(db, { title: "alpha gizmo draft", summary: "s", body: "b" });
+      expect(searchLoreCount(db, { query: "alpha gizmo" })).toBe(1);
+      expect(
+        searchLoreCount(db, { query: "alpha gizmo", includeRestricted: true }),
+      ).toBe(2);
+      expect(
+        searchLoreCount(db, { query: "alpha gizmo", includeDrafts: true }),
+      ).toBe(2);
+    });
+
+    it("does not record read events (a count is not a read)", () => {
+      addLore(db, { title: "countable record", summary: "s", body: "b" });
+      searchLoreCount(db, { query: "countable" });
+      const reads = (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'read'")
+          .get() as { n: number }
+      ).n;
+      expect(reads).toBe(0);
     });
   });
 

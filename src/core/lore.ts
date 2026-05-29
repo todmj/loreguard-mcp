@@ -1078,31 +1078,70 @@ export function deleteLore(db: Database, id: string): boolean {
 }
 
 /**
- * FTS-backed search. Default behaviour (designed for token efficiency
- * and agent trust):
+ * Trust-ranking knobs (see `trustRankAdjustment`). These are MULTIPLIERS
+ * on a row's relevance magnitude (|bm25|), not additive constants, so
+ * the adjustment scales with each row's own relevance and behaves the
+ * same whether bm25 scores are ~1e-6 (tiny corpus, where IDF collapses)
+ * or ~-17 (realistic corpus). A fixed additive delta would dominate on a
+ * tiny corpus and vanish on a large one; a multiplier is scale-free.
  *
- *   - Only `status='active'` records are returned. Drafts (agent-
- *     suggested but un-approved), deprecated, and superseded records
- *     are hidden unless their respective `include*` flag is set.
- *   - `restricted` records are excluded unless `includeRestricted`.
- *   - Returns `LoreSummary` (no body). Use `get_lore(id)` to fetch the
- *     full body on demand. This is the token-saving contract.
- *   - Stale records (review_after in the past) DO appear but each
- *     result is flagged `stale: true` so the agent can warn the user.
- *
- * Ranking: FTS bm25 when `query` is set; otherwise `updated_at` desc.
+ * The summed delta is clamped to ±RANK_MAX_SWING. At ±0.5 trust can
+ * shift effective relevance by at most half: it reorders genuine
+ * near-ties (within a ~3× relevance band) and rescues a buried
+ * high-trust record, but can NEVER flip a clearly stronger lexical
+ * match. Mirrors the trust signals the README tells the agent to prefer:
+ * active + sourced + medium/high confidence + fresh.
  */
-export function searchLore(
-  db: Database,
-  opts: SearchOptions = {},
-): LoreSummary[] {
-  // Public-API hardening — CLI and MCP both validate before we get
-  // here, but the library entry point is also exported (see src/index.ts)
-  // so an embedder calling searchLore directly could otherwise pass
-  // NaN / -1 / 1e100 / "not a number". better-sqlite3 binds the value
-  // into the LIMIT clause and you get a confusing "datatype mismatch"
-  // deep in native code. Surface a clear error at the boundary.
-  const limit = normaliseLimit(opts.limit);
+const RANK_STALE_PENALTY = 0.25;
+const RANK_NO_SOURCE_PENALTY = 0.1;
+const RANK_LOW_CONFIDENCE_PENALTY = 0.15;
+const RANK_HIGH_CONFIDENCE_BONUS = 0.15;
+const RANK_MAX_SWING = 0.5;
+
+/**
+ * Candidate pool size for trust re-ranking. We over-fetch by bm25 up to
+ * this many rows, re-rank in TS, then slice to the caller's `limit`. The
+ * pool is larger than the public limit cap (50) so a high-trust record
+ * that bm25 buried just past the limit can still surface. Bounded so the
+ * extra hydration cost stays small.
+ */
+const RANK_CANDIDATE_POOL = 60;
+
+/**
+ * Per-row trust delta (a signed fraction, clamped to ±RANK_MAX_SWING)
+ * applied multiplicatively to the row's relevance magnitude before
+ * sorting — POSITIVE promotes, NEGATIVE demotes. Pure and exported so
+ * the ranking contract can be unit-tested without a populated FTS index.
+ *
+ *   - stale (review_after lapsed): demote
+ *   - no source: mild demote
+ *   - low confidence: mild demote; high confidence: mild promote
+ */
+export function trustRankAdjustment(row: {
+  readonly source: string | null;
+  readonly confidence: LoreConfidence;
+  readonly review_after: string | null;
+}): number {
+  let adj = 0;
+  if (isStale(row.review_after)) adj -= RANK_STALE_PENALTY;
+  if (!row.source) adj -= RANK_NO_SOURCE_PENALTY;
+  if (row.confidence === "low") adj -= RANK_LOW_CONFIDENCE_PENALTY;
+  else if (row.confidence === "high") adj += RANK_HIGH_CONFIDENCE_BONUS;
+  return Math.max(-RANK_MAX_SWING, Math.min(RANK_MAX_SWING, adj));
+}
+
+/**
+ * Shared filter/clause builder for `searchLore` and `searchLoreCount`.
+ * Returns the FROM fragment, the WHERE clause, the bound params (FTS
+ * MATCH param first when a query is present), and whether FTS is active.
+ * Centralised so the count query can't drift from the result query.
+ */
+function buildSearchClauses(opts: SearchOptions): {
+  from: string;
+  where: string;
+  params: Array<string | number>;
+  hasFts: boolean;
+} {
   if (opts.updatedAfter !== undefined) {
     assertIsoDate(opts.updatedAfter, "updatedAfter");
   }
@@ -1115,25 +1154,14 @@ export function searchLore(
   const params: Array<string | number> = [];
 
   const hasFts = !!opts.query && opts.query.trim().length > 0;
-  let from: string;
-  let select: string;
+  const from = hasFts
+    ? `lore l JOIN lore_fts fts ON fts.rowid = l.rowid`
+    : `lore l`;
   if (hasFts) {
-    from = `lore l JOIN lore_fts fts ON fts.rowid = l.rowid`;
-    // bm25 column weights: title is the strongest authority signal,
-    // summary is curated short-form, body is the long tail. Heavier
-    // weight = more contribution to relevance for matches in that
-    // column. Order matches the FTS table definition (title, summary,
-    // body). Values picked to be opinionated but not extreme.
-    select = `l.*, bm25(lore_fts, 3.0, 2.0, 1.0) AS score`;
     filters.push("lore_fts MATCH ?");
     params.push(toFtsQuery(opts.query!.trim(), !!opts.prefix));
-  } else {
-    from = `lore l`;
-    select = `l.*, NULL AS score`;
   }
-  filters.push(
-    `l.status IN (${allowedStatuses.map(() => "?").join(",")})`,
-  );
+  filters.push(`l.status IN (${allowedStatuses.map(() => "?").join(",")})`);
   params.push(...allowedStatuses);
   if (!opts.includeRestricted) {
     filters.push("l.restricted = 0");
@@ -1163,6 +1191,67 @@ export function searchLore(
     params.push(opts.updatedAfter);
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  return { from, where, params, hasFts };
+}
+
+/**
+ * Count of records matching the same filters `searchLore` would apply,
+ * ignoring `limit`. Used by the MCP/CLI layers to tell the caller when a
+ * result set was truncated ("showing 10 of 23") so it can narrow rather
+ * than wrongly conclude the team has nothing more. Cheap COUNT(*); no
+ * read events recorded (a count is not a read of any record).
+ */
+export function searchLoreCount(db: Database, opts: SearchOptions = {}): number {
+  const { from, where, params } = buildSearchClauses(opts);
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM ${from} ${where}`)
+    .get(...params) as { n: number };
+  return row.n;
+}
+
+/**
+ * FTS-backed search. Default behaviour (designed for token efficiency
+ * and agent trust):
+ *
+ *   - Only `status='active'` records are returned. Drafts (agent-
+ *     suggested but un-approved), deprecated, and superseded records
+ *     are hidden unless their respective `include*` flag is set.
+ *   - `restricted` records are excluded unless `includeRestricted`.
+ *   - Returns `LoreSummary` (no body). Use `get_lore(id)` to fetch the
+ *     full body on demand. This is the token-saving contract.
+ *   - Stale records (review_after in the past) DO appear but each
+ *     result is flagged `stale: true` so the agent can warn the user.
+ *
+ * Ranking: when `query` is set, bm25 relevance ADJUSTED by trust signals
+ * (see `trustRankAdjustment`) — we over-fetch a candidate pool, re-rank,
+ * then slice to `limit`, so a high-trust record bm25 buried just past the
+ * limit can still surface and a stale/low-trust record can't crowd out a
+ * better-trusted near-tie. Without a query, plain `updated_at` desc.
+ */
+export function searchLore(
+  db: Database,
+  opts: SearchOptions = {},
+): LoreSummary[] {
+  // Public-API hardening — CLI and MCP both validate before we get
+  // here, but the library entry point is also exported (see src/index.ts)
+  // so an embedder calling searchLore directly could otherwise pass
+  // NaN / -1 / 1e100 / "not a number". better-sqlite3 binds the value
+  // into the LIMIT clause and you get a confusing "datatype mismatch"
+  // deep in native code. Surface a clear error at the boundary.
+  const limit = normaliseLimit(opts.limit);
+  const { from, where, params, hasFts } = buildSearchClauses(opts);
+
+  // bm25 column weights: title is the strongest authority signal,
+  // summary is curated short-form, body is the long tail. Heavier
+  // weight = more contribution to relevance for matches in that column.
+  // Order matches the FTS table definition (title, summary, body).
+  const select = hasFts
+    ? `l.*, bm25(lore_fts, 3.0, 2.0, 1.0) AS score`
+    : `l.*, NULL AS score`;
+  // When FTS is active we over-fetch a candidate pool ordered by raw
+  // bm25, then trust-re-rank in TS. Without FTS the recency order is the
+  // intended final order, so fetch exactly `limit`.
+  const fetchLimit = hasFts ? Math.max(limit, RANK_CANDIDATE_POOL) : limit;
   const orderBy = hasFts
     ? "ORDER BY score ASC, l.updated_at DESC"
     : "ORDER BY l.updated_at DESC";
@@ -1171,11 +1260,38 @@ export function searchLore(
     FROM ${from}
     ${where}
     ${orderBy}
-    LIMIT ${limit}
+    LIMIT ${fetchLimit}
   `;
-  const rows = db.prepare(sql).all(...params) as Array<
+  let rows = db.prepare(sql).all(...params) as Array<
     LoreRow & { score: number | null }
   >;
+
+  if (hasFts) {
+    // Stable re-rank by trust-adjusted bm25. bm25 is NEGATIVE (more
+    // negative = more relevant; SQL sorted ASC). We scale each row's
+    // score by (1 + adj) where adj ∈ [-0.5, 0.5]: a promoted row's
+    // negative score gets MORE negative (ranks earlier), a demoted row's
+    // gets LESS negative. Because the multiplier is bounded to [0.5,
+    // 1.5], a reorder can only happen inside a ~3× relevance band, so
+    // trust breaks near-ties and rescues buried high-trust records but
+    // never overrides a clearly stronger lexical match. V8's Array.sort
+    // is stable; updated_at desc is the explicit tiebreak for true ties.
+    rows = rows
+      .map((row) => ({
+        row,
+        adjusted: (row.score ?? 0) * (1 + trustRankAdjustment(row)),
+      }))
+      .sort((a, b) => {
+        if (a.adjusted !== b.adjusted) return a.adjusted - b.adjusted;
+        return a.row.updated_at < b.row.updated_at ? 1 : -1;
+      })
+      .map((s) => s.row);
+  }
+  // Slice to the caller's limit BEFORE hydrating / recording reads, so we
+  // don't pay to hydrate pool rows that didn't make the cut and don't
+  // record a "read" of a record we never returned.
+  rows = rows.slice(0, limit);
+
   const ids = rows.map((r) => r.id);
   const repoMap = reposByIds(db, ids);
   const tagMap = tagsByIds(db, ids);

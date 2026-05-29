@@ -14,6 +14,7 @@ import BetterSqlite3 from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  absenceQueryMatches,
   findActiveAbsence,
   listAbsences,
   normaliseAbsenceQuery,
@@ -55,6 +56,42 @@ describe("normaliseAbsenceQuery", () => {
     expect(normaliseAbsenceQuery("retry policy")).not.toBe(
       normaliseAbsenceQuery("backoff strategy"),
     );
+  });
+});
+
+describe("absenceQueryMatches — token-set containment", () => {
+  const k = normaliseAbsenceQuery;
+  it("matches exact (degenerate) keys", () => {
+    expect(absenceQueryMatches(k("retry policy"), k("policy retry"))).toBe(true);
+  });
+
+  it("matches when the marker is a subset of the query (query adds a word)", () => {
+    // marker "retry policy" applies to search "payments-svc retry policy"
+    expect(
+      absenceQueryMatches(k("retry policy"), k("payments-svc retry policy")),
+    ).toBe(true);
+  });
+
+  it("matches when the query is a subset of the marker (query drops a word)", () => {
+    expect(
+      absenceQueryMatches(k("payments-svc retry policy"), k("retry policy")),
+    ).toBe(true);
+  });
+
+  it("does NOT match on mere overlap (neither side contains the other)", () => {
+    // share "policy" but neither is a subset → conservative no-match
+    expect(absenceQueryMatches(k("retry policy"), k("policy timeout"))).toBe(
+      false,
+    );
+  });
+
+  it("does NOT match unrelated queries", () => {
+    expect(absenceQueryMatches(k("retry policy"), k("auth tokens"))).toBe(false);
+  });
+
+  it("empty keys never match", () => {
+    expect(absenceQueryMatches("", k("anything"))).toBe(false);
+    expect(absenceQueryMatches(k("anything"), "")).toBe(false);
   });
 });
 
@@ -157,6 +194,41 @@ describe("recordAbsence + findActiveAbsence", () => {
     expect(() =>
       recordAbsence(db, { query: "q", reason: "  ", recordedBy: "human" }),
     ).toThrow(/reason/);
+  });
+
+  it("findActiveAbsence fires under containment (query adds/drops a token)", () => {
+    recordAbsence(db, {
+      query: "retry policy",
+      reason: "no team policy on retries",
+      recordedBy: "human",
+    });
+    // Search with an extra token still surfaces the marker.
+    expect(
+      findActiveAbsence(db, { query: "payments-svc retry policy" })?.reason,
+    ).toBe("no team policy on retries");
+    // A genuinely unrelated search does not.
+    expect(findActiveAbsence(db, { query: "auth token rotation" })).toBeNull();
+  });
+
+  it("findActiveAbsence picks the most-recent matching marker under containment", () => {
+    recordAbsence(db, {
+      query: "retry policy",
+      reason: "older gap",
+      recordedBy: "human",
+    });
+    const t = Date.now();
+    while (Date.now() === t) {
+      /* spin so recorded_at differs */
+    }
+    recordAbsence(db, {
+      query: "retry policy backoff",
+      reason: "newer gap",
+      recordedBy: "human",
+    });
+    // "retry policy" is contained by both markers; recency wins.
+    expect(findActiveAbsence(db, { query: "retry policy" })?.reason).toBe(
+      "newer gap",
+    );
   });
 });
 

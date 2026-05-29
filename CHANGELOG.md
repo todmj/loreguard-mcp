@@ -6,7 +6,30 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **Trust-aware search ranking.** `search_lore` / `loreguard search`
+  now re-rank FTS hits by relevance *adjusted for trust*: sourced,
+  higher-confidence, non-stale records rank above low-trust near-ties,
+  and a high-trust record bm25 buried just past `limit` can surface
+  into the returned page. The adjustment is a bounded multiplier on each
+  hit's own relevance magnitude (±0.5), so it reorders near-ties and
+  rescues buried records but never overrides a clearly stronger lexical
+  match — and behaves identically on tiny and large corpora.
+- **Verified-absence markers now match on token-set containment** rather
+  than an exact normalised key. A marker recorded for `"retry policy"`
+  now fires on a search for `"payments-svc retry policy"` (and vice
+  versa). Still conservative: mere token overlap (neither side a subset)
+  does not match, preserving the "won't silently swallow unrelated
+  searches" property.
+
+### Added
+
+- **Truncation signal on search.** When more records match than were
+  returned, `search_lore` includes a `truncated: { shown, total, hint }`
+  block and `loreguard search` prints `showing N of M matches`, so the
+  caller narrows or raises `limit` instead of assuming the top page is
+  the team's complete position.
 
 ## [0.1.1] — 2026-05-25
 

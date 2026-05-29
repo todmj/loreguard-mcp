@@ -11,6 +11,7 @@ import {
   reportConflict,
   ReportConflictError,
   searchLore,
+  searchLoreCount,
   suggestLore,
 } from "../core/lore.js";
 import { defaultDbPath, openDb } from "../db/index.js";
@@ -114,7 +115,13 @@ export async function runMcpServer(): Promise<void> {
         "\"date timezone payments-svc\", \"webhook retry policy\", " +
         "\"migration style guide\". On a zero-hit response, the server " +
         "may include an `absence_marker` (an acknowledged team-known gap) " +
-        "or a `next` field coaching your next move.",
+        "or a `next` field coaching your next move. When more matches " +
+        "exist than were returned, a `truncated: { shown, total, hint }` " +
+        "block tells you the set is partial — narrow or raise `limit` " +
+        "before treating the shown hits as the team's complete position. " +
+        "Results are ordered by relevance ADJUSTED for trust (active, " +
+        "sourced, higher-confidence, non-stale records rank higher), so " +
+        "the top hits are the ones most worth acting on.",
       inputSchema: {
         query: z
           .string()
@@ -191,7 +198,7 @@ export async function runMcpServer(): Promise<void> {
     },
     async (args) => {
       try {
-        const hits = searchLore(db, {
+        const searchOpts = {
           query: args.query,
           repo: args.repo,
           tag: args.tag,
@@ -208,7 +215,16 @@ export async function runMcpServer(): Promise<void> {
               ? args.includeRestricted
               : false,
           limit: args.limit,
-        });
+        };
+        const hits = searchLore(db, searchOpts);
+        // Unlimited count under the SAME filters, so the response can tell
+        // the agent when results were capped ("showing 10 of 23") and it
+        // narrows rather than concluding the team has nothing more. Only
+        // worth the extra query when we actually hit the cap.
+        const totalMatches =
+          hits.length >= (args.limit ?? 10)
+            ? searchLoreCount(db, searchOpts)
+            : hits.length;
         audit({
           tool: "search_lore",
           request: args as Record<string, unknown>,
@@ -238,6 +254,7 @@ export async function runMcpServer(): Promise<void> {
           hits: mcpHits,
           query: args.query,
           absenceMarker,
+          totalMatches,
         });
         return {
           content: [

@@ -66,6 +66,38 @@ export function normaliseAbsenceQuery(q: string): string {
     .join(" ");
 }
 
+/**
+ * Does a recorded marker apply to a search query? Both inputs are
+ * already-normalised keys (see `normaliseAbsenceQuery`). We match on
+ * token-set CONTAINMENT in either direction: the marker fires when its
+ * tokens are a subset of the query's, OR the query's are a subset of the
+ * marker's. Exact match is the degenerate (mutual-subset) case.
+ *
+ * Why containment rather than exact equality: exact-key matching meant
+ * one extra or missing token missed entirely, so the feature almost
+ * never fired in practice ("payments-svc retry policy" wouldn't match a
+ * "retry policy" marker). Containment fixes the common add/drop-a-word
+ * case while staying conservative — it deliberately does NOT match on
+ * mere overlap ("retry policy" vs "policy timeout" share a token but
+ * neither contains the other, so no match), preserving the existing
+ * "not synonym-aware, won't silently swallow unrelated searches"
+ * property the module documents.
+ *
+ * Empty keys never match (defensive; a blank query has no tokens).
+ */
+export function absenceQueryMatches(markerKey: string, queryKey: string): boolean {
+  if (markerKey.length === 0 || queryKey.length === 0) return false;
+  if (markerKey === queryKey) return true;
+  const markerTokens = markerKey.split(" ");
+  const queryTokens = new Set(queryKey.split(" "));
+  const markerSet = new Set(markerTokens);
+  // marker ⊆ query ?
+  const markerSubsetOfQuery = markerTokens.every((t) => queryTokens.has(t));
+  if (markerSubsetOfQuery) return true;
+  // query ⊆ marker ?
+  return [...queryTokens].every((t) => markerSet.has(t));
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -126,9 +158,17 @@ export function recordAbsence(
 
 /**
  * Return the most-recent active (non-expired) marker matching the
- * normalised query. When `repo` is given, prefer markers scoped to that
- * repo; fall back to global markers (repo IS NULL) if no repo-specific
- * marker exists. Returns null when nothing matches.
+ * normalised query under token-set containment (see
+ * `absenceQueryMatches`). When `repo` is given, prefer markers scoped to
+ * that repo; fall back to global markers (repo IS NULL) if no
+ * repo-specific marker matches. Returns null when nothing matches.
+ *
+ * Matching happens in TS rather than SQL because containment isn't a
+ * column equality. We scan active markers in each scope tier ordered by
+ * recency and take the first match — the active-marker set is bounded
+ * (markers self-expire, default 14 days), so the scan is cheap. The
+ * `expires_at > now` predicate and `idx_absence_expires` keep the
+ * candidate set to live markers only.
  */
 export function findActiveAbsence(
   db: Database,
@@ -137,24 +177,33 @@ export function findActiveAbsence(
   const key = normaliseAbsenceQuery(opts.query);
   if (key.length === 0) return null;
   const now = nowIso();
+  const firstMatch = (
+    rows: Array<Parameters<typeof rowToMarker>[0]>,
+  ): AbsenceMarker | null => {
+    for (const r of rows) {
+      if (absenceQueryMatches(r.query, key)) return rowToMarker(r);
+    }
+    return null;
+  };
   if (opts.repo) {
     const specific = db
       .prepare(
         `SELECT * FROM absence_markers
-         WHERE query = ? AND repo = ? AND expires_at > ?
-         ORDER BY recorded_at DESC LIMIT 1`,
+         WHERE repo = ? AND expires_at > ?
+         ORDER BY recorded_at DESC`,
       )
-      .get(key, opts.repo, now) as Parameters<typeof rowToMarker>[0] | undefined;
-    if (specific) return rowToMarker(specific);
+      .all(opts.repo, now) as Array<Parameters<typeof rowToMarker>[0]>;
+    const hit = firstMatch(specific);
+    if (hit) return hit;
   }
   const global = db
     .prepare(
       `SELECT * FROM absence_markers
-       WHERE query = ? AND repo IS NULL AND expires_at > ?
-       ORDER BY recorded_at DESC LIMIT 1`,
+       WHERE repo IS NULL AND expires_at > ?
+       ORDER BY recorded_at DESC`,
     )
-    .get(key, now) as Parameters<typeof rowToMarker>[0] | undefined;
-  return global ? rowToMarker(global) : null;
+    .all(now) as Array<Parameters<typeof rowToMarker>[0]>;
+  return firstMatch(global);
 }
 
 export function listAbsences(

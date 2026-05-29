@@ -24,6 +24,7 @@ export {
   listTags,
   rejectLore,
   searchLore,
+  searchLoreCount,
   supersedeLore,
   suggestLore,
   updateLore,
