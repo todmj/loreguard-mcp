@@ -27,7 +27,18 @@ import {
   exportLore,
   upsertLoreFromImport,
 } from "../core/lore.js";
-import type { Lore, LoreStatus, LoreConfidence } from "../db/types.js";
+import {
+  type BoundaryExportRecord,
+  exportBoundaries,
+  importBoundary,
+} from "../core/boundaries.js";
+import type {
+  BoundaryRole,
+  BoundaryStatus,
+  Lore,
+  LoreStatus,
+  LoreConfidence,
+} from "../db/types.js";
 
 const ALLOWED_STATUS = new Set<LoreStatus>([
   "draft",
@@ -206,6 +217,8 @@ export interface ExportSyncResult {
   readonly restrictedWritten: number;
   /** Paths removed by `clean: true`. Empty when the flag is off. */
   readonly removed: ReadonlyArray<string>;
+  /** Count of boundary edges written to boundaries.jsonl. */
+  readonly boundariesWritten: number;
 }
 
 /**
@@ -214,6 +227,22 @@ export interface ExportSyncResult {
  * stray hand-edited file in the directory isn't blown away.
  */
 const LORE_ID_FILE_RE = /^[a-z2-9]{8}\.md$/;
+
+/**
+ * Cross-repo boundary edges round-trip through a single newline-delimited
+ * JSON file (`boundaries.jsonl`) rather than one file per edge: edges are
+ * small, numerous, and machine-shaped, so a single committable artifact
+ * diffs cleanly and keeps the `.loreguard/` directory from filling with
+ * tiny files. One JSON object per line; active edges only by default.
+ */
+export const BOUNDARIES_FILE = "boundaries.jsonl";
+
+const ALLOWED_BOUNDARY_ROLE = new Set<BoundaryRole>(["provides", "consumes"]);
+const ALLOWED_BOUNDARY_STATUS = new Set<BoundaryStatus>([
+  "draft",
+  "active",
+  "deprecated",
+]);
 
 /**
  * Write one `<id>.md` per record into `dir`. Filter defaults mirror
@@ -286,11 +315,83 @@ export function exportToDir(
     if (lore.restricted) restrictedWritten++;
     written.push(path);
   }
+  // Boundary edges → a single boundaries.jsonl. Active edges only (same
+  // PR-is-the-gate stance as lore); drafts/deprecated opt in via the
+  // same flags. The file is rewritten wholesale each export so a removed
+  // edge actually disappears from the artifact.
+  const boundaryRecs = exportBoundaries(db, {
+    includeDrafts: opts.includeDrafts,
+    includeDeprecated: opts.includeDeprecated,
+  });
+  const boundariesPath = join(dir, BOUNDARIES_FILE);
+  if (boundaryRecs.length > 0) {
+    const jsonl =
+      boundaryRecs.map((r) => JSON.stringify(r)).join("\n") + "\n";
+    writeFileSync(boundariesPath, jsonl, { encoding: "utf8" });
+    written.push(boundariesPath);
+  } else {
+    // No active edges — remove a stale artifact so it doesn't linger.
+    try {
+      unlinkSync(boundariesPath);
+    } catch {
+      // not present — fine
+    }
+  }
   return {
     written,
     excluded: { restricted: excludedRestricted, drafts: excludedDrafts },
     restrictedWritten,
     removed,
+    boundariesWritten: boundaryRecs.length,
+  };
+}
+
+/**
+ * Parse + validate one boundaries.jsonl line into a BoundaryExportRecord.
+ * Returns null for blank lines, unparseable JSON, or rows missing the
+ * required (repo, contract, role, status) shape — a malformed line is
+ * skipped, never allowed to poison the import.
+ */
+export function parseBoundaryLine(line: string): BoundaryExportRecord | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return null;
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const repo = obj["repo"];
+  const contract = obj["contract"];
+  const role = obj["role"];
+  const status = obj["status"];
+  if (typeof repo !== "string" || repo.length === 0) return null;
+  if (typeof contract !== "string" || contract.length === 0) return null;
+  if (typeof role !== "string" || !ALLOWED_BOUNDARY_ROLE.has(role as BoundaryRole)) {
+    return null;
+  }
+  if (
+    typeof status !== "string" ||
+    !ALLOWED_BOUNDARY_STATUS.has(status as BoundaryStatus)
+  ) {
+    return null;
+  }
+  const str = (k: string): string | undefined =>
+    typeof obj[k] === "string" ? (obj[k] as string) : undefined;
+  return {
+    id: str("id") ?? "",
+    repo,
+    contract,
+    role: role as BoundaryRole,
+    kind: str("kind"),
+    status: status as BoundaryStatus,
+    detail: str("detail"),
+    source: str("source"),
+    author: str("author"),
+    createdAt: str("createdAt") ?? "",
+    updatedAt: str("updatedAt") ?? "",
   };
 }
 
@@ -344,6 +445,9 @@ export interface ImportSyncResult {
    * the reason is shown verbatim in the CLI summary.
    */
   readonly skipped: ReadonlyArray<{ file: string; reason: string }>;
+  /** Boundary edges imported from boundaries.jsonl (created + updated). */
+  readonly boundariesCreated: number;
+  readonly boundariesUpdated: number;
   /** True when `dryRun` was set; no DB writes happened. */
   readonly dryRun: boolean;
 }
@@ -588,12 +692,35 @@ export function importFromDir(
       });
     }
   }
+  // Boundary edges from boundaries.jsonl. Keyed by (repo, contract, role)
+  // inside importBoundary, so two repos' maps converge on one local edge.
+  let boundariesCreated = 0;
+  let boundariesUpdated = 0;
+  try {
+    const bpath = join(dir, BOUNDARIES_FILE);
+    const btext = readFileSync(bpath, "utf8");
+    for (const line of btext.split(/\r?\n/)) {
+      const rec = parseBoundaryLine(line);
+      if (!rec) continue;
+      const outcome = importBoundary(db, rec, {
+        force: opts.force,
+        dryRun: opts.dryRun,
+      });
+      if (outcome === "created") boundariesCreated++;
+      else if (outcome === "updated") boundariesUpdated++;
+    }
+  } catch {
+    // No boundaries.jsonl in this directory — fine, most repos won't
+    // have boundary edges. Only lore is required.
+  }
   return {
     created,
     updated,
     skippedNewer,
     danglingSupersededBy,
     skipped,
+    boundariesCreated,
+    boundariesUpdated,
     dryRun: !!opts.dryRun,
   };
 }
@@ -647,8 +774,13 @@ export function findLoreguardDirs(root: string): string[] {
       const full = join(dir, entry.name);
       if (entry.name === ".loreguard") {
         try {
-          const md = readdirSync(full).some((f) => LORE_ID_FILE_RE.test(f));
-          if (md) found.push(full);
+          // Count a .loreguard/ if it holds at least one lore <id>.md OR
+          // a boundaries.jsonl — a repo may export only boundary edges
+          // (no lore yet) and still belong in the cross-repo map.
+          const contents = readdirSync(full);
+          const hasLore = contents.some((f) => LORE_ID_FILE_RE.test(f));
+          const hasBoundaries = contents.includes(BOUNDARIES_FILE);
+          if (hasLore || hasBoundaries) found.push(full);
         } catch {
           // unreadable — skip
         }

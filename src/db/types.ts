@@ -185,3 +185,57 @@ export interface UpdateLoreInput {
   readonly tags?: ReadonlyArray<string>;
   readonly restricted?: boolean;
 }
+
+// ── Boundaries (cross-repo interaction map) ───────────────────────────
+
+/**
+ * A boundary edge records that a repo `provides` (owns / produces) or
+ * `consumes` (depends on) a named contract — an event, endpoint, queue,
+ * table, RPC, etc. Aggregated across repos via `sync`, the edges form a
+ * dependency map: changing a contract in one app, the `consumes` edges
+ * tell you which other apps it affects.
+ *
+ *   - "provides" = this repo is the owner / source of truth for the
+ *     contract (the producer of an event, the server of an endpoint).
+ *   - "consumes" = this repo depends on it (subscribes, calls, reads).
+ */
+export type BoundaryRole = "provides" | "consumes";
+
+/**
+ * Boundary lifecycle. Same trust spine as lore: agent-declared edges
+ * land as `draft` (hidden from the default map until a human ratifies);
+ * `active` is canonical; `deprecated` is retired but still findable so
+ * historical edges aren't silently lost.
+ */
+export type BoundaryStatus = "draft" | "active" | "deprecated";
+
+export interface BoundaryRow {
+  readonly id: string;
+  readonly repo: string;
+  /** Normalised contract key (lowercased / hyphenated; see normaliseContract). */
+  readonly contract: string;
+  readonly role: BoundaryRole;
+  /** Optional classifier: event | endpoint | queue | table | rpc | other. */
+  readonly kind: string | null;
+  readonly status: BoundaryStatus;
+  /** Free-text note: which field/version/path, migration caveats, etc. */
+  readonly detail: string | null;
+  readonly source: string | null;
+  readonly author: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export interface Boundary {
+  readonly id: string;
+  readonly repo: string;
+  readonly contract: string;
+  readonly role: BoundaryRole;
+  readonly kind?: string;
+  readonly status: BoundaryStatus;
+  readonly detail?: string;
+  readonly source?: string;
+  readonly author?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}

@@ -74,6 +74,19 @@ function firstId(s: string): string {
   return m[1]!;
 }
 
+/**
+ * Pull a boundary id from `boundary add/suggest` output. The plain
+ * firstId can't be used here: the role words "provides"/"consumes" and
+ * the literal "boundary" are all 8 lowercase letters and collide with
+ * the id alphabet, so we read the id from the parenthesised `(<id>)`
+ * form that renderBoundary prints.
+ */
+function boundaryId(s: string): string {
+  const m = /\(([a-z2-9]{8})\)/.exec(s);
+  if (!m) throw new Error(`no boundary id found in: ${s}`);
+  return m[1]!;
+}
+
 describe("CLI dispatch — basics", () => {
   it("--help and --version short-circuit with code 0", async () => {
     expect(await run("--help")).toBe(0);
@@ -237,6 +250,70 @@ describe("CLI — prune", () => {
   it("prune runs and reports deletions, exits 0", async () => {
     expect(await run("prune")).toBe(0);
     expect(out).toContain("deleted");
+  });
+});
+
+describe("CLI — boundary + impact", () => {
+  beforeEach(async () => {
+    await run("init");
+    out = "";
+    err = "";
+  });
+
+  it("boundary add (active) then impact shows providers/consumers across spellings", async () => {
+    expect(
+      await run("boundary", "add", "orders-svc", "OrderSubmitted", "provides", "--kind", "event"),
+    ).toBe(0);
+    out = "";
+    expect(
+      await run("boundary", "add", "reporting-svc", "order-submitted", "consumes"),
+    ).toBe(0);
+    out = "";
+    expect(await run("impact", "order_submitted")).toBe(0);
+    expect(out).toContain("order-submitted");
+    expect(out).toContain("orders-svc");
+    expect(out).toContain("reporting-svc");
+    expect(out).toMatch(/Providers.*1/s);
+    expect(out).toMatch(/Consumers.*1/s);
+  });
+
+  it("boundary suggest lands a draft hidden from the default map until approved", async () => {
+    await run("boundary", "suggest", "svc", "thing", "provides");
+    const id = boundaryId(out);
+    out = "";
+    // Default list excludes drafts.
+    await run("boundary", "list");
+    expect(out).not.toContain(id);
+    out = "";
+    // approve → visible.
+    expect(await run("boundary", "approve", id)).toBe(0);
+    out = "";
+    await run("boundary", "list");
+    expect(out).toContain(id);
+  });
+
+  it("boundary add rejects a bad role, exits 2", async () => {
+    expect(await run("boundary", "add", "svc", "c", "uses")).toBe(2);
+    expect(err).toContain("provides");
+  });
+
+  it("impact with no contract exits 2", async () => {
+    expect(await run("impact")).toBe(2);
+  });
+
+  it("boundary reject drops a draft; refuses an active edge", async () => {
+    await run("boundary", "suggest", "svc", "c", "consumes");
+    const id = boundaryId(out);
+    out = "";
+    expect(await run("boundary", "reject", id)).toBe(0);
+    out = "";
+    err = "";
+    // Now add an active edge and confirm reject refuses it.
+    await run("boundary", "add", "svc2", "c2", "provides");
+    const activeId = boundaryId(out);
+    err = "";
+    expect(await run("boundary", "reject", activeId)).toBe(1);
+    expect(err).toContain("not a draft");
   });
 });
 

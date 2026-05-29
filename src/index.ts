@@ -32,8 +32,22 @@ export {
   verifyLore,
 } from "./core/lore.js";
 export { newLoreId } from "./core/ids.js";
+export {
+  addBoundary,
+  approveBoundary,
+  deprecateBoundary,
+  findDependents,
+  listBoundaries,
+  listBoundaryDrafts,
+  normaliseContract,
+  rejectBoundary,
+  suggestBoundary,
+} from "./core/boundaries.js";
 export type {
   AddLoreInput,
+  Boundary,
+  BoundaryRole,
+  BoundaryStatus,
   Lore,
   LoreConfidence,
   LoreRow,

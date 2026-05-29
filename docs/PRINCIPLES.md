@@ -110,10 +110,20 @@ trust posture is "your machine, your data, your audit log."
 
 Things explicitly NOT in v0.1, with rationale:
 
-- **Typed records / linksTo cross-repo edges.** See principle 2 — the
+- **Typed records / linksTo cross-repo edges.** ~~See principle 2 — the
   agent derives these. Revisit only when dogfooding produces concrete
-  cross-repo pain ("I had to manually correlate the matching
-  handler 3 times this week"), not as speculative architecture.
+  cross-repo pain, not as speculative architecture.~~ **Shipped
+  (post-0.1.1) as the boundary map.** The concrete pain — "change a
+  contract in app A, what does it break in B and C?" — was judged worth
+  building to the end goal rather than waiting on dogfood. Boundaries
+  are a *typed* record (`provides` / `consumes` edges over normalised
+  contract names), deliberately coarse-grained (service/contract level,
+  not an exhaustive call graph) to avoid the review-queue blow-up that
+  fine-grained auto-derivation would cause. They keep the trust spine:
+  agents `declare_boundary` → draft; a human ratifies. Cross-repo
+  aggregation rides the existing `sync` artifact
+  (`.loreguard/boundaries.jsonl`), not a server — principle 4 holds.
+  See "Cross-repo impact map" in the README.
 - **Server-side dedup of `suggest_lore` / `report_conflict`.**
   Reviewer triages duplicates in the existing review queue. Auto-dedup
   hides surface area we want the human to see.

@@ -149,6 +149,41 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    id: "004-boundaries",
+    up(db) {
+      // Cross-repo interaction map. Each row is a directed edge: a repo
+      // `provides` or `consumes` a named contract (event / endpoint /
+      // queue / table / rpc). Aggregated across repos (via sync), the
+      // edges answer "if I change this contract, who does it affect?".
+      //
+      // Same trust spine as lore: agent-declared edges land as 'draft'
+      // and a human ratifies them to 'active'. 'deprecated' retires an
+      // edge without losing the history. The (repo, contract, role)
+      // triple is unique — one canonical edge per direction per repo —
+      // so re-declaring updates in place rather than duplicating.
+      db.exec(`
+        CREATE TABLE boundaries (
+          id          TEXT PRIMARY KEY,
+          repo        TEXT NOT NULL,
+          contract    TEXT NOT NULL,
+          role        TEXT NOT NULL
+            CHECK (role IN ('provides','consumes')),
+          kind        TEXT,
+          status      TEXT NOT NULL DEFAULT 'active'
+            CHECK (status IN ('draft','active','deprecated')),
+          detail      TEXT,
+          source      TEXT,
+          author      TEXT,
+          created_at  TEXT NOT NULL,
+          updated_at  TEXT NOT NULL,
+          UNIQUE (repo, contract, role)
+        );
+        CREATE INDEX idx_boundaries_contract ON boundaries(contract);
+        CREATE INDEX idx_boundaries_repo ON boundaries(repo);
+      `);
+    },
+  },
 ];
 
 /**

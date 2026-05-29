@@ -9,8 +9,18 @@ import {
   pruneExpiredAbsences,
   recordAbsence,
 } from "../core/absence.js";
+import {
+  addBoundary,
+  approveBoundary,
+  deprecateBoundary,
+  findDependents,
+  listBoundaries,
+  listBoundaryDrafts,
+  rejectBoundary,
+  suggestBoundary,
+} from "../core/boundaries.js";
 import { defaultDbPath, openDb } from "../db/index.js";
-import type { LoreConfidence } from "../db/types.js";
+import type { Boundary, BoundaryRole, LoreConfidence } from "../db/types.js";
 import {
   addLore,
   approveLore,
@@ -190,6 +200,21 @@ COMMANDS
                             events are never touched) and expired
                             absence markers. --vacuum reclaims disk
                             after; --dry-run reports counts only.
+  impact <contract>         Cross-repo impact map for a contract: who
+                            PROVIDES (owns/produces) it and who CONSUMES
+                            (depends on) it. The consumers are the blast
+                            radius of a shape change. Reads the map
+                            aggregated locally + via sync pull.
+  boundary <sub> ...        Manage cross-repo interaction edges:
+                            add <repo> <contract> <provides|consumes>
+                              [--kind K --detail "..." --source URL]
+                            suggest ...   (same, lands as a draft)
+                            list [--repo X --contract C --role R
+                              --include-drafts --include-deprecated]
+                            review [--list]   triage draft edges
+                            approve <id> | reject <id> | deprecate <id>
+                            Agents declare edges as drafts via MCP; a
+                            human ratifies them — same trust gate as lore.
   ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run] [--include-intent-files]
                             Bulk-import drafts from **clean knowledge
                             docs** (ADRs, SECURITY.md, MIGRATION.md,
@@ -921,6 +946,7 @@ async function cmdSyncPull(
   let totalSkippedNewer = 0;
   let totalRejected = 0;
   let totalDangling = 0;
+  let totalBoundaries = 0;
   try {
     process.stdout.write(
       `loreguard: sync pull — found ${found.length} .loreguard/ ${found.length === 1 ? "directory" : "directories"} under ${absParent}\n`,
@@ -932,6 +958,7 @@ async function cmdSyncPull(
       totalSkippedNewer += r.skippedNewer;
       totalRejected += r.skipped.length;
       totalDangling += r.danglingSupersededBy.length;
+      totalBoundaries += r.boundariesCreated + r.boundariesUpdated;
       const verb = r.dryRun ? "would import" : "imported";
       process.stdout.write(
         `  ${d}: ${verb} ${r.created} new + ${r.updated} updated` +
@@ -958,6 +985,9 @@ async function cmdSyncPull(
           ? `; ${totalSkippedNewer} skipped as newer locally`
           : "") +
         (totalRejected > 0 ? `; ${totalRejected} rejected` : "") +
+        (totalBoundaries > 0
+          ? `; ${totalBoundaries} boundary edge(s)`
+          : "") +
         (totalDangling > 0
           ? `; ${totalDangling} dangling supersededBy refs (see warnings)`
           : "") +
@@ -1009,6 +1039,11 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
       process.stdout.write(
         `loreguard: wrote ${r.written.length} record(s) to ${dir}\n`,
       );
+      if (r.boundariesWritten > 0) {
+        process.stdout.write(
+          `  including ${r.boundariesWritten} boundary edge(s) → ${dir}/boundaries.jsonl\n`,
+        );
+      }
       if (r.restrictedWritten > 0) {
         process.stderr.write(
           `loreguard: WARNING — ${r.restrictedWritten} restricted record(s) written to ${dir}.\n` +
@@ -1040,6 +1075,11 @@ async function cmdSync(args: ReturnType<typeof parseArgs>): Promise<number> {
     process.stdout.write(
       `loreguard: ${verb} ${r.created} new + ${r.updated} updated record(s) from ${dir}\n`,
     );
+    if (r.boundariesCreated > 0 || r.boundariesUpdated > 0) {
+      process.stdout.write(
+        `  ${verb} ${r.boundariesCreated} new + ${r.boundariesUpdated} updated boundary edge(s)\n`,
+      );
+    }
     if (r.skippedNewer > 0) {
       process.stdout.write(
         `  ${r.skippedNewer} record(s) skipped — local copy is newer (pass --force to overwrite)\n`,
@@ -1653,6 +1693,232 @@ async function cmdAbsent(args: ReturnType<typeof parseArgs>): Promise<number> {
   }
 }
 
+/** One-line render of a boundary edge for CLI output. */
+function renderBoundary(b: Boundary): string {
+  const kind = b.kind ? ` (${b.kind})` : "";
+  const detail = b.detail ? `\n    ${b.detail}` : "";
+  const src = b.source ? `\n    source: ${b.source}` : "";
+  const status = b.status === "active" ? "" : ` [${b.status}]`;
+  return `  ${b.repo}  ${b.role}  ${b.contract}${kind}${status}  (${b.id})${detail}${src}`;
+}
+
+/**
+ * `loreguard impact <contract>` — the headline cross-repo query. Shows
+ * who provides (owns/produces) a contract and who consumes (depends on)
+ * it, so before changing a contract you can see the blast radius. Reads
+ * the aggregated map (populated locally and via `loreguard sync pull`).
+ */
+async function cmdImpact(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const contract = args.positionals.join(" ").trim();
+  if (!contract) {
+    process.stderr.write("loreguard: impact <contract> requires a contract name\n");
+    return 2;
+  }
+  const includeDrafts = getBool(args.flags, "include-drafts");
+  const db = openDb();
+  try {
+    const r = findDependents(db, contract, { includeDrafts });
+    process.stdout.write(`Impact map for contract: ${r.contract}\n\n`);
+    process.stdout.write(`Providers (own / produce it): ${r.providers.length}\n`);
+    if (r.providers.length === 0) {
+      process.stdout.write("  (none declared)\n");
+    } else {
+      for (const b of r.providers) process.stdout.write(renderBoundary(b) + "\n");
+    }
+    process.stdout.write(
+      `\nConsumers (depend on it — blast radius): ${r.consumers.length}\n`,
+    );
+    if (r.consumers.length === 0) {
+      process.stdout.write("  (none declared)\n");
+    } else {
+      for (const b of r.consumers) process.stdout.write(renderBoundary(b) + "\n");
+    }
+    if (r.providers.length === 0 && r.consumers.length === 0) {
+      process.stdout.write(
+        "\nNo declared edges. The map is only as complete as what teams have\n" +
+          "declared — this is NOT proof a change is safe. Add edges with\n" +
+          `  loreguard boundary add <repo> ${r.contract} provides|consumes\n` +
+          "or aggregate other repos' maps with `loreguard sync pull <parent>`.\n",
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `loreguard boundary <sub>` — manage cross-repo interaction edges.
+ *
+ *   add <repo> <contract> <role>      human edge (active)
+ *   suggest <repo> <contract> <role>  draft edge (as an agent would)
+ *   list [--repo X] [--contract C] [--role provides|consumes]
+ *   review [--list]                   triage draft edges
+ *   approve <id> | reject <id> | deprecate <id>
+ *
+ * role is `provides` or `consumes`. Optional flags: --kind, --detail,
+ * --source.
+ */
+async function cmdBoundary(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  const db = openDb();
+  try {
+    if (sub === "add" || sub === "suggest") {
+      const repo = args.positionals[1];
+      const contract = args.positionals[2];
+      const roleRaw = args.positionals[3];
+      if (!repo || !contract || !roleRaw) {
+        process.stderr.write(
+          `loreguard: boundary ${sub} <repo> <contract> <provides|consumes> [--kind K --detail "..." --source URL]\n`,
+        );
+        return 2;
+      }
+      if (roleRaw !== "provides" && roleRaw !== "consumes") {
+        process.stderr.write(
+          `loreguard: role must be 'provides' or 'consumes' (got '${roleRaw}')\n`,
+        );
+        return 2;
+      }
+      const role = roleRaw as BoundaryRole;
+      const input = {
+        repo,
+        contract,
+        role,
+        kind: getString(args.flags, "kind"),
+        detail: getString(args.flags, "detail"),
+        source: getString(args.flags, "source"),
+        author: process.env["USER"],
+      };
+      const edge = sub === "add" ? addBoundary(db, input) : suggestBoundary(db, input);
+      process.stdout.write(
+        `loreguard: ${sub === "add" ? "declared" : "suggested"} boundary ${edge.id} (${edge.status})\n` +
+          renderBoundary(edge) +
+          "\n",
+      );
+      return 0;
+    }
+    if (sub === "list") {
+      const role = getString(args.flags, "role");
+      if (role !== undefined && role !== "provides" && role !== "consumes") {
+        process.stderr.write("loreguard: --role must be 'provides' or 'consumes'\n");
+        return 2;
+      }
+      const edges = listBoundaries(db, {
+        repo: getString(args.flags, "repo"),
+        contract: getString(args.flags, "contract"),
+        role: role as BoundaryRole | undefined,
+        includeDrafts: getBool(args.flags, "include-drafts"),
+        includeDeprecated: getBool(args.flags, "include-deprecated"),
+      });
+      if (edges.length === 0) {
+        process.stdout.write("loreguard: no boundary edges\n");
+        return 0;
+      }
+      for (const b of edges) process.stdout.write(renderBoundary(b) + "\n");
+      return 0;
+    }
+    if (sub === "review") {
+      const drafts = listBoundaryDrafts(db);
+      if (drafts.length === 0) {
+        process.stdout.write("loreguard: no pending boundary drafts.\n");
+        return 0;
+      }
+      const listOnly = getBool(args.flags, "list") || !process.stdin.isTTY;
+      if (listOnly) {
+        process.stdout.write(`${drafts.length} boundary draft(s) awaiting review:\n\n`);
+        for (const b of drafts) process.stdout.write(renderBoundary(b) + "\n");
+        process.stdout.write(
+          "\nUse `loreguard boundary approve <id>` / `loreguard boundary reject <id>`.\n",
+        );
+        return 0;
+      }
+      let approved = 0;
+      let rejected = 0;
+      let skipped = 0;
+      for (let i = 0; i < drafts.length; i++) {
+        const b = drafts[i]!;
+        process.stdout.write(`── Edge ${i + 1} of ${drafts.length} ──\n${renderBoundary(b)}\n`);
+        const answer = (
+          await prompt("[a]pprove  [r]eject  [s]kip  [q]uit  > ")
+        )
+          .trim()
+          .toLowerCase();
+        if (answer === "q" || answer === "quit") {
+          process.stdout.write("\nloreguard: stopped.\n");
+          break;
+        }
+        if (answer === "a" || answer === "approve" || answer === "y") {
+          if (approveBoundary(db, b.id)) approved++;
+          process.stdout.write(`✓ approved ${b.id}\n\n`);
+          continue;
+        }
+        if (answer === "r" || answer === "reject" || answer === "n") {
+          if (rejectBoundary(db, b.id)) rejected++;
+          process.stdout.write(`✗ rejected ${b.id}\n\n`);
+          continue;
+        }
+        skipped++;
+        process.stdout.write(`… skipped ${b.id}\n\n`);
+      }
+      process.stdout.write(
+        `\nReview complete. approved: ${approved}  rejected: ${rejected}  skipped: ${skipped}\n`,
+      );
+      return 0;
+    }
+    if (sub === "approve") {
+      const id = args.positionals[1];
+      if (!id) {
+        process.stderr.write("loreguard: boundary approve <id> requires an id\n");
+        return 2;
+      }
+      const edge = approveBoundary(db, id);
+      if (!edge) {
+        process.stderr.write(
+          `loreguard: ${id} is not a pending boundary draft (already active, deprecated, or unknown)\n`,
+        );
+        return 1;
+      }
+      process.stdout.write(`loreguard: approved boundary ${edge.id}\n`);
+      return 0;
+    }
+    if (sub === "reject") {
+      const id = args.positionals[1];
+      if (!id) {
+        process.stderr.write("loreguard: boundary reject <id> requires an id\n");
+        return 2;
+      }
+      if (!rejectBoundary(db, id)) {
+        process.stderr.write(
+          `loreguard: cannot reject ${id} (unknown id or not a draft; use \`loreguard boundary deprecate\`)\n`,
+        );
+        return 1;
+      }
+      process.stdout.write(`loreguard: rejected boundary ${id}\n`);
+      return 0;
+    }
+    if (sub === "deprecate") {
+      const id = args.positionals[1];
+      if (!id) {
+        process.stderr.write("loreguard: boundary deprecate <id> requires an id\n");
+        return 2;
+      }
+      const edge = deprecateBoundary(db, id);
+      if (!edge) {
+        process.stderr.write(`loreguard: no boundary edge with id ${id}\n`);
+        return 1;
+      }
+      process.stdout.write(`loreguard: deprecated boundary ${edge.id}\n`);
+      return 0;
+    }
+    process.stderr.write(
+      "loreguard: boundary requires a subcommand — add | suggest | list | review | approve | reject | deprecate\n",
+    );
+    return 2;
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * `loreguard prune` — local-DB GC. Two leaks accumulate forever without
  * this: `read` audit events (one per search/get result) and expired
@@ -2183,6 +2449,10 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdStats(parsed);
       case "prune":
         return await cmdPrune(parsed);
+      case "impact":
+        return await cmdImpact(parsed);
+      case "boundary":
+        return await cmdBoundary(parsed);
       case "ingest-md":
         return await cmdIngestMd(parsed);
       case "hooks":

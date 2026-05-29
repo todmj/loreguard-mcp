@@ -6,6 +6,29 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Added — cross-repo impact map (boundaries)
+
+- **Boundary map: "change a contract here, what does it break there?"**
+  A new typed record — `provides` / `consumes` edges over normalised
+  contract names (events, endpoints, queues, tables, RPCs) — that
+  aggregates across repos into a dependency graph.
+  - `loreguard impact <contract>` — the headline query: who owns a
+    contract and who depends on it (the consumers are the blast radius).
+  - `loreguard boundary add|suggest|list|review|approve|reject|deprecate`
+    — manage edges with the **same trust gate as lore**: agents declare
+    drafts, a human ratifies.
+  - MCP tools `find_dependents({contract})` (read — call before editing a
+    cross-repo contract) and `declare_boundary({repo, contract, role,…})`
+    (agent → draft). The MCP surface is now seven tools.
+  - **Cross-repo by aggregation, not a server:** edges round-trip through
+    `.loreguard/boundaries.jsonl`; `loreguard sync pull <parent>` merges
+    every repo's map into one local DB. No daemon, no network.
+  - Contract names are normalised (camelCase / kebab / snake all
+    converge), so `OrderSubmitted` and `order-submitted` join — the
+    failure mode that would otherwise make the map silently useless.
+  - Schema migration `004-boundaries` (append-only; existing DBs migrate
+    forward on next open).
+
 ### Changed
 
 - **Trust-aware search ranking.** `search_lore` / `loreguard search`

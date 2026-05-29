@@ -24,11 +24,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { addLore, getLore, suggestLore } from "../src/core/lore.js";
+import { addBoundary, findDependents, listBoundaries } from "../src/core/boundaries.js";
 import { runMigrations } from "../src/db/migrations.js";
 import {
+  BOUNDARIES_FILE,
   exportToDir,
   findLoreguardDirs,
   importFromDir,
+  parseBoundaryLine,
   parseFrontmatter,
   renderLoreMarkdown,
 } from "../src/cli/sync.js";
@@ -552,5 +555,78 @@ describe("findLoreguardDirs — cross-repo discovery (`sync pull`)", () => {
     seedLoreDir(join(root, ".tmp", ".loreguard"));
     const found = findLoreguardDirs(root);
     expect(found).toEqual([join(root, "repo", ".loreguard")]);
+  });
+
+  it("discovers a .loreguard/ that holds only boundaries.jsonl (no lore .md)", () => {
+    const dir = join(root, "edges-only", ".loreguard");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, BOUNDARIES_FILE),
+      JSON.stringify({
+        id: "abcd2345",
+        repo: "svc",
+        contract: "c",
+        role: "provides",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }) + "\n",
+    );
+    expect(findLoreguardDirs(root)).toEqual([dir]);
+  });
+});
+
+describe("cli/sync — boundary round-trip", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "loreguard-bnd-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("parseBoundaryLine validates shape and skips junk", () => {
+    expect(parseBoundaryLine("")).toBeNull();
+    expect(parseBoundaryLine("not json")).toBeNull();
+    expect(parseBoundaryLine(JSON.stringify({ repo: "r" }))).toBeNull();
+    const ok = parseBoundaryLine(
+      JSON.stringify({ repo: "r", contract: "c", role: "provides", status: "active" }),
+    );
+    expect(ok?.repo).toBe("r");
+    expect(ok?.role).toBe("provides");
+  });
+
+  it("export writes boundaries.jsonl; import on another DB aggregates the edges", () => {
+    const a = newInMemoryDb();
+    addBoundary(a, { repo: "orders-svc", contract: "OrderSubmitted", role: "provides" });
+    const out = join(dir, ".loreguard");
+    const res = exportToDir(a, out);
+    expect(res.boundariesWritten).toBe(1);
+    const jsonl = readFileSync(join(out, BOUNDARIES_FILE), "utf8");
+    expect(jsonl).toContain("order-submitted");
+
+    const central = newInMemoryDb();
+    addBoundary(central, { repo: "reporting-svc", contract: "order-submitted", role: "consumes" });
+    const imp = importFromDir(central, out);
+    expect(imp.boundariesCreated).toBe(1);
+    const impact = findDependents(central, "order-submitted");
+    expect(impact.providers.map((b) => b.repo)).toEqual(["orders-svc"]);
+    expect(impact.consumers.map((b) => b.repo)).toEqual(["reporting-svc"]);
+  });
+
+  it("removes a stale boundaries.jsonl when no active edges remain", () => {
+    const db = newInMemoryDb();
+    addBoundary(db, { repo: "svc", contract: "c", role: "provides" });
+    const out = join(dir, ".loreguard");
+    exportToDir(db, out);
+    expect(readdirSync(out)).toContain(BOUNDARIES_FILE);
+    // Deprecate the only edge → next export should drop the artifact.
+    const edges = listBoundaries(db);
+    db.prepare("UPDATE boundaries SET status = 'deprecated' WHERE id = ?").run(
+      edges[0]!.id,
+    );
+    const res = exportToDir(db, out);
+    expect(res.boundariesWritten).toBe(0);
+    expect(readdirSync(out)).not.toContain(BOUNDARIES_FILE);
   });
 });

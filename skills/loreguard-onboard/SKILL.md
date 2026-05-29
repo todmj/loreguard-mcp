@@ -249,6 +249,27 @@ tell the user the cheaper path instead of re-drafting it by hand:
 This session-grounded pass is the difference between transcribing a
 repo and capturing what was actually learned working in it.
 
+### Step 7 — (optional) map cross-repo boundaries
+
+While surveying the repo (Step 2) you'll often spot integration points:
+an event this service publishes, an endpoint it serves, a queue or table
+another team owns. These are **boundary edges** — the substrate of the
+cross-repo impact map.
+
+- When you find a producer/consumer relationship, check the map first
+  with `find_dependents({ contract })`, then record what's missing with
+  `declare_boundary({ repo, contract, role: "provides" | "consumes",
+  kind?, detail?, source? })`. Like lore, edges land as **drafts** — the
+  human ratifies via `loreguard boundary review`.
+- Use `provides` when this repo OWNS / produces the contract;
+  `consumes` when it depends on one owned elsewhere.
+- Don't invent edges. Only declare integration points you actually saw
+  in code/config (publish calls, route definitions, client calls, schema
+  references). Cite the evidence in `detail` or `source`.
+
+This is how the "change this contract, what does it affect?" query gets
+populated — one onboarding at a time, per repo, aggregated via `sync`.
+
 ### A note on search results
 
 When you call `search_lore` during onboarding to check for

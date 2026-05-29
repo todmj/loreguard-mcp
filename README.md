@@ -572,17 +572,19 @@ claude mcp add loreguard node /absolute/path/to/loreguard-mcp/dist/bin/loreguard
 (Substitute your actual clone path. `claude mcp list` will show the
 result.)
 
-Claude sees five tools:
+Claude sees seven tools:
 
-- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
+- `search_lore({ query, repo?, tag?, prefix?, updatedAfter?, includeDrafts?, includeDeprecated?, includeSuperseded?, includeRestricted?, limit? })` — returns brief summaries (`tag` accepts a string or `string[]` for ANY-of; `prefix: true` matches 3+ char tokens as prefixes). Hits are ranked by relevance **adjusted for trust** (sourced / higher-confidence / non-stale records win near-ties). When more records match than were returned, the response carries `truncated: { shown, total, hint }` so the agent narrows rather than assuming the top page is the whole story. When the query has **zero hits** and a matching active **absence marker** exists, the response includes `absence_marker: { reason, recordedAt, expiresAt }` so the next agent sees "we checked, known gap" rather than re-discovering nothing. MCP results omit the CLI-only conflict hints: shared repo + tag often means complementary, and surfacing the heuristic to an LLM tends to cost more tokens (the agent treats it as authority and tries to "resolve" false alarms) than the heuristic earns. `loreguard search` still shows them for human triage.
 - `get_lore({ id })` — full body of one record.
 - `suggest_lore({ title, summary, body, repos?, tags?, source?, confidence?, team? })` — agent creates a draft; response includes `{ id, status, message, possibleDuplicates, restrictedDuplicateCount }` (up to 3 similar non-restricted records with a `reason` signal summary, plus a redacted count for matching restricted records — hints only, never blocks). Over-cap inputs (`title > 200`, `summary > 800`) return a **structured error** `{ error: "summary_too_long" | "title_too_long", provided, max, suggested_cut, hint }` instead of failing through zod's max-cap path — the agent can paste `suggested_cut` back as a corrected retry without a human round-trip. Body length is intentionally uncapped (body is fetched on demand via `get_lore`, not returned in search hits).
 - `report_conflict({ existingId, observation, source?, repos?, tags? })` — agent has found code (or other evidence) that contradicts an existing **active** record. Creates a DRAFT counter-record tagged `conflict-report`, linked back via `conflictsWith: [existingId]`, surfaced in the normal `loreguard review` queue. The original record is **never mutated** — the link is one-way; the reviewer resolves via `loreguard supersede` / `loreguard update` / `loreguard reject` against the counter. **Restricted existing records are unconditionally refused** — agents can read restricted records (when `LOREGUARD_ALLOW_RESTRICTED_MCP=1`) but can never draft counter-records against them; surface the concern to the human and let them revise via the CLI. See [`docs/adr/ADR-003-conflict-records-shape.md`](docs/adr/ADR-003-conflict-records-shape.md) for the storage-shape rationale.
 - `record_absence({ query, reason, repo?, expiresInDays? })` — agent searched, found nothing, AND has confirmed the gap is real and durable (not just a phrasing miss). Records a **self-expiring** marker (default 14 days; max 365) so the next `search_lore` on the same normalised query surfaces `absence_marker: { reason, ... }` instead of returning empty again. **MCP access is off by default in v0.1** (`LOREGUARD_ALLOW_MCP_ABSENCE=1` to enable); the CLI `loreguard absent record` always works, so the default flow is "agent surfaces the gap → human records the marker." When enabled: **don't auto-call this on every zero-hit search** — only when the absence is itself the finding. No review gate when MCP writes are enabled (low-stakes, time-bounded — distinct from drafts). Markers are normalised order-independently and case-insensitively so `"payments-svc retry policy"` and `"Retry POLICY payments-svc"` share a marker. Repo-scoped markers shadow global ones when the search is also repo-scoped.
+- `find_dependents({ contract })` — **the cross-repo impact check.** Returns who `provides` (owns / produces) and who `consumes` (depends on) a contract — an event, endpoint, queue, table, RPC. The `consumers` list is the blast radius of a shape change. Call it **before** editing a cross-repo contract. Contract names are normalised (camelCase / kebab / snake all converge), so `OrderSubmitted` and `order-submitted` join. An empty result is not proof of safety — only that the map is incomplete.
+- `declare_boundary({ repo, contract, role, kind?, detail?, source? })` — agent records that a repo `provides` or `consumes` a contract. Lands as a **DRAFT** (invisible to the default map until a human runs `loreguard boundary approve <id>`) — agents cannot ratify their own edges, same trust gate as `suggest_lore`. Re-declaring the same `(repo, contract, role)` updates in place.
 
 The MCP surface is intentionally narrow. Agents can read, suggest,
-challenge, and flag known gaps; **approval, deprecation, and
-supersession are CLI-only**.
+challenge, flag known gaps, and map cross-repo boundaries; **approval,
+deprecation, and supersession are CLI-only**.
 
 ## Tell your agent when to use lore
 
@@ -854,6 +856,57 @@ Only `kind = 'read'` events are deleted — the lifecycle chain
 imported`) is never touched, so the audit history stays intact. The
 default 90-day window matches the `stats` citation window, so pruning
 older reads loses nothing `stats` would have shown.
+
+## Cross-repo impact map — boundaries
+
+The hardest question when you change a contract in one service is *who
+else does this break?* Loreguard answers it with a **boundary map**: a
+team-ratified record of which repos `provides` (own / produce) and which
+`consumes` (depend on) each contract — an event, HTTP endpoint, queue,
+DB table, or RPC method.
+
+```bash
+# Declare edges (human, lands active):
+loreguard boundary add orders-svc    "OrderSubmitted" provides --kind event \
+  --detail "v2 adds customerTier"
+loreguard boundary add reporting-svc "order-submitted" consumes --kind event
+loreguard boundary add billing-svc   "order_submitted" consumes
+
+# The headline query — before you change a contract, see the blast radius:
+loreguard impact OrderSubmitted
+#   Providers (own / produce it): 1
+#     orders-svc     provides  order-submitted (event)
+#   Consumers (depend on it — blast radius): 2
+#     billing-svc    consumes  order-submitted
+#     reporting-svc  consumes  order-submitted
+```
+
+Contract names are **normalised** so the cross-repo join actually
+connects: `OrderSubmitted`, `order-submitted`, and `order_submitted` all
+resolve to one contract. Path- and dotted-style names (`POST /v1/orders`,
+`orders.submitted`) are preserved.
+
+**The map is cross-repo by aggregation, not by a server.** Each repo
+exports its edges to `.loreguard/boundaries.jsonl` (alongside the lore
+`.md` files) on `loreguard sync export`; `loreguard sync pull <parent>`
+walks every repo under a directory and merges their maps into your local
+DB — so one machine working across N repos sees the whole graph. No
+daemon, no network, consistent with the local-only posture.
+
+**Same trust gate as lore.** Agents `declare_boundary` over MCP and the
+edge lands as a **draft**; a human ratifies it:
+
+```bash
+loreguard boundary review          # triage draft edges: [a]pprove [r]eject [s]kip
+loreguard boundary list            # active edges (--include-drafts / --include-deprecated)
+loreguard boundary approve <id>
+loreguard boundary deprecate <id>  # retire an edge without losing the history
+```
+
+An agent should call `find_dependents` **before** editing a cross-repo
+contract and `declare_boundary` when it discovers a producer/consumer
+relationship that isn't on the map yet. An empty `impact` result is not
+proof a change is safe — only that the map doesn't cover it yet.
 
 ### Inspect / back up your lore
 
