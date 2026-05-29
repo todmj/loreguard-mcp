@@ -214,6 +214,51 @@ different angle (e.g. "now let's look at the test suite for
 authoritative-checks lore", or "let's scan for incident-lesson signals
 in the issues tracker").
 
+### Step 6 — (when invoked mid/end-of-session) ground in THIS session's work
+
+The repo survey in Step 2 is a *cold* read. The higher-signal source,
+when you have it, is the work the current session just did — what *you*
+learned debugging, migrating, or fixing something here over the last
+hour is exactly the non-obvious knowledge the next agent will lack.
+
+If this skill is invoked after real work in the session (not a
+first-touch cold start), before wrapping up ask yourself:
+
+1. **Did I hit a gotcha that wasted time and will bite again?** (a
+   non-obvious constraint, a surprising default, an ordering rule)
+2. **Did I discover a convention by reading code that isn't written
+   down?** (naming, auth, timezone, data-modelling)
+3. **Did I steer away from a deprecated pattern after spotting it?**
+4. **Did I learn why a past decision was made** that the code alone
+   doesn't explain?
+
+For each "yes", propose it as a candidate draft (same numbered-list +
+confirm flow as Step 3) with the session as the citation — e.g.
+`Source: discovered while implementing <task> this session`. Only
+durable, project-specific findings; skip anything transient or
+already-obvious (same Step 3 skip rules apply).
+
+When a finding is already captured in a commit you made this session,
+tell the user the cheaper path instead of re-drafting it by hand:
+
+> "I committed the rationale in `a4f12c0`. You can draft that straight
+> from the message with `loreguard suggest --from-commit a4f12c0` (it
+> auto-derives the commit permalink as the source) rather than me
+> retyping it."
+
+This session-grounded pass is the difference between transcribing a
+repo and capturing what was actually learned working in it.
+
+### A note on search results
+
+When you call `search_lore` during onboarding to check for
+near-duplicates, the server ranks hits by relevance *adjusted for trust*
+(sourced, higher-confidence, non-stale records first), so the top hits
+are the ones most worth comparing against. If a response includes a
+`truncated: { shown, total }` block, more records matched than were
+returned — narrow the query or raise `limit` before concluding a topic
+is uncovered.
+
 ## Out of scope for this skill
 
 - **Don't promote, deprecate, or supersede** records. Those are CLI-only

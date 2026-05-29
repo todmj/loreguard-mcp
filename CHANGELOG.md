@@ -42,6 +42,14 @@ itself is pre-1.0 so semver promises are best-effort.
   in the commit, why retype it" capture gap (PRINCIPLES.md §6). Lands as
   a DRAFT; the reviewer promotes via `loreguard review`.
 
+- **`/loreguard-onboard` skill — session-grounded capture pass.** A new
+  Step 6 directs the agent, when invoked after real work in a session
+  (not just a cold first-touch), to capture what it *learned* doing that
+  work — gotchas, undocumented conventions, decision rationale — and to
+  point the user at `suggest --from-commit` when the rationale already
+  lives in a commit. The difference between transcribing a repo and
+  capturing what was learned working in it.
+
 ### Tests
 
 - Added a CLI dispatcher integration suite (`test/cli.test.ts`) driving
