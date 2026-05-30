@@ -130,8 +130,14 @@ Things explicitly NOT in v0.1, with rationale:
 - **Bidirectional `conflictsWith` back-references.** Would require
   the agent to mutate the original (canonical) record. Violates
   principle 3.
-- **Auto-promotion of induct drafts.** The whole point of the queue
+- **Auto-promotion of onboarding drafts.** The whole point of the queue
   is the human review beat.
+- **Mechanical / CLI-driven cold-start (`induct`, `ingest-md`).**
+  Removed post-0.2. A fixed-question interview produces generic records;
+  chunking docs produces ~80% noise that floods the review queue. Good
+  lore needs judgement about what's durable — the `/loreguard-onboard`
+  skill (agent reads the repo, proposes grounded drafts) is the single
+  cold-start path. One good door beats four mediocre ones.
 - **Semantic / embedding search.** FTS5 + Crockford ids + manual
   tagging gets you most of the way. Embeddings are a v0.2+
   consideration if recall becomes measurably bad.
@@ -148,11 +154,12 @@ Two near-term wins that DO move the needle, both small:
    creation without breaking the trust model:
    - Stop-hook variant that nudges "you did X, anything worth
      capturing?" at session end (the hook infrastructure exists).
-   - Better `induct` follow-ups grounded in the agent's actual
-     session work, not a fixed 10-Q interview.
-   - Commit-message auto-extraction (`loreguard suggest --from-commit
-     <sha>`) for the "I wrote this in the commit message, why not
-     capture it" case.
+   - Session-grounded `/loreguard-onboard` follow-ups: capture what the
+     agent actually learned working in the repo this session, not just a
+     cold first-touch survey.
+   - Commit-message capture (`loreguard suggest --from-commit <sha>`)
+     for the "I wrote this in the commit message, why not capture it"
+     case. *(Shipped.)*
 
 2. **Cross-repo discovery in the existing shape.** Two sub-items:
    - `loreguard sync pull <parent>` — recursive walk of every

@@ -6,6 +6,18 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Removed — one cold-start path, not four
+
+- **`loreguard induct` and `loreguard ingest-md` are gone.** The
+  `/loreguard-onboard` skill is now the single cold-start path. The
+  fixed-question interview produced generic records; doc-chunking
+  produced ~80% noise that flooded the review queue and degraded the
+  trust gate. Good lore needs judgement about what's durable — the skill
+  (agent reads the repo, proposes grounded drafts with citations) does
+  that; the mechanical paths didn't. Fewer doors, one of them good.
+  `loreguard setup`'s cold-start nudge now points only at the skill.
+  (The git-remote name parser the CLI still needs moved to `setup.ts`.)
+
 ### Added — cross-repo impact map (boundaries)
 
 - **Boundary map: "change a contract here, what does it break there?"**

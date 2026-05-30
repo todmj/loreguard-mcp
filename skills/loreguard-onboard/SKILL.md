@@ -17,24 +17,16 @@ description: |
 
 # /loreguard-onboard — repo-aware onboarding for loreguard
 
-A complement to the CLI's `loreguard induct` (which asks a fixed list of
-10 generic questions without seeing the repo). This skill earns its keep
-by **reading the repo first** so the questions and proposed drafts are
-specific to *this* codebase, with source citations.
+This skill is **the** way to seed a repo with lore. It earns its keep by
+**reading the repo first** (README, ADRs, recent commits, deprecation
+markers, in-flight migrations) so the proposed drafts are specific to
+*this* codebase, with source citations — rather than inventing memory or
+mechanically chunking every bullet in the docs (which produces mostly
+noise and floods the review queue).
 
-Three CLI paths fit different cold-start shapes — surface the right one
-to the user up front:
-
-| Path | Best for | Output |
-|---|---|---|
-| `loreguard induct` | quick, generic, no-agent | DRAFTS via fixed 10-Q interview |
-| `/loreguard-onboard` (this skill) | repo-grounded, agent-driven, selective | DRAFTS with source citations + optional absence markers |
-| `loreguard ingest-md <glob>` | bulk-import existing markdown (CLAUDE.md, ADRs, migration notes) | DRAFTS, one per H3 / bullet |
-
-The skill is the *selective + grounded* path. If the user has 50 ADRs
-and wants them as drafts in one shot, `ingest-md` is faster — point
-them at it and consider it an upstream for this skill (you can still
-follow up with curation in `loreguard review`).
+Output: DRAFT records with source citations, plus optional absence
+markers and boundary edges. Everything lands in `loreguard review` for a
+human to ratify — the skill never promotes its own records.
 
 ## Hard rules
 
@@ -284,11 +276,11 @@ is uncovered.
 
 - **Don't promote, deprecate, or supersede** records. Those are CLI-only
   by design.
-- **Don't bulk-import** existing docs as lore yourself. Onboarding via
-  this skill is *selective* — the value is human judgement on what's
-  worth capturing, not volume. If the user wants bulk, point them at
-  `loreguard ingest-md <glob>` (which creates one DRAFT per H3 or
-  bullet) and let them curate via `loreguard review`.
+- **Don't bulk-import** existing docs as lore. Onboarding is
+  *selective* — the value is judgement about what's durable and
+  non-obvious, not volume. Transcribing every bullet of a doc floods the
+  review queue with noise and degrades the trust gate. Propose a focused
+  set; let the human ratify via `loreguard review`.
 - **Don't enable restricted records** (`includeRestricted` / setting
   `restricted: true`). If the user wants restricted lore, they author
   it via the CLI with `loreguard add --restricted`.

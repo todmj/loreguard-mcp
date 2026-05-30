@@ -46,13 +46,6 @@ import { getBool, getString, getStringArray, parseArgs } from "./args.js";
 import { cleanDemo, countLore, seedDemo } from "./demo.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderFull, renderSummary } from "./format.js";
-import {
-  INDUCTION_QUESTIONS,
-  type InductionAnswer,
-  runInduct,
-  shortInductionQuestions,
-  shortRepoNameFromRemote,
-} from "./induct.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { prompt, promptMulti } from "./prompt.js";
 import {
@@ -63,6 +56,7 @@ import {
   copySkillFile,
   detectIngestSources,
   findBundledSkillPath,
+  shortRepoNameFromRemote,
   skillDestPath,
 } from "./setup.js";
 import { exportToDir, findLoreguardDirs, importFromDir } from "./sync.js";
@@ -159,9 +153,10 @@ COMMANDS
                             One-command bootstrap: register the MCP server
                             with Claude Code, append the retrieval rule to
                             CLAUDE.md, install /loreguard-onboard into
-                            ~/.claude/skills/, and nudge you toward the
-                            right cold-start ingest (detects CLAUDE.md,
-                            AGENTS.md, ADR dirs, top-level docs).
+                            ~/.claude/skills/, and point you at
+                            /loreguard-onboard for cold-start (detects
+                            CLAUDE.md, AGENTS.md, ADR dirs, top-level docs
+                            to make the nudge concrete).
                             Idempotent. Opt out per step with --skip-mcp,
                             --skip-claude-md, --skip-skill,
                             --skip-corpus-nudge.
@@ -170,14 +165,6 @@ COMMANDS
                             authoring content first. Refuses to seed into
                             a non-empty DB unless --force. Use --clean to
                             remove the demo records later.
-  induct [--repo <name>] [--short]
-                            Repo-onboarding interview: walks you through
-                            10 high-signal questions (or 5 with --short)
-                            and turns each non-blank answer into a DRAFT
-                            lore record (tagged 'induction', 90-day
-                            review window). Drafts only — promote via
-                            \`loreguard review\`. Use --repo to override the
-                            auto-detected name (repeatable).
   absent record "<query>" --reason "..." [--repo X] [--expires-days 14]
                             Record a verified-absence marker: "we
                             checked, the team has no policy on this".
@@ -216,23 +203,6 @@ COMMANDS
                             approve <id> | reject <id> | deprecate <id>
                             Agents declare edges as drafts via MCP; a
                             human ratifies them — same trust gate as lore.
-  ingest-md <glob>... [--section "Heading"] [--tag X] [--repo Y] [--source URL] [--dry-run] [--include-intent-files]
-                            Bulk-import drafts from **clean knowledge
-                            docs** (ADRs, SECURITY.md, MIGRATION.md,
-                            INTEGRATION_GUIDE.md). NOT for plans /
-                            roadmaps / progress trackers — those are
-                            skipped by default via filename deny-list
-                            (plan/roadmap/progress/todo/backlog/spec/
-                            usability/status/execution). Override with
-                            --include-intent-files when you mean it.
-                            Within allowed files, a content-shape
-                            filter rejects TOC bullets, date-stamped
-                            status headings, and items with no rule-
-                            or fact-markers and a short body. ALWAYS
-                            runs --dry-run first to see what survives.
-                            For messy repos, use the
-                            /loreguard-onboard skill — it uses agent
-                            judgement instead of chunking.
   hooks install [--project] [--dry-run]
                             Wire the Claude Code Stop-hook for
                             session-end review nudges. Writes
@@ -415,7 +385,7 @@ async function cmdSuggestFromCommit(
   const fields = commitToDraftFields(commit, source);
   const repos = getStringArray(args.flags, "repo");
   const tags = getStringArray(args.flags, "tag");
-  // Auto-detect repo when none given, matching the induct/ingest ladder.
+  // Auto-detect repo when none given (git remote → cwd basename).
   const finalRepos =
     repos.length > 0
       ? repos
@@ -1203,9 +1173,9 @@ async function cmdDemo(args: ReturnType<typeof parseArgs>): Promise<number> {
  *      `github.com/foo/payments-svc` should tag drafts as
  *      `payments-svc` even if the local folder is `payments-clone`).
  *   2. `basename(process.cwd())` — what the user almost always wants
- *      when they ran `loreguard induct` inside a folder they care
- *      about, with no remote configured (local-only repo, just-init'd
- *      project, monorepo subdir, etc.).
+ *      when run inside a folder they care about with no remote
+ *      configured (local-only repo, just-init'd project, monorepo
+ *      subdir, etc.).
  *
  * Returns `{ name, source }` so the caller can phrase the
  * confirmation prompt honestly ("Detected repo 'foo' from git remote"
@@ -1229,104 +1199,6 @@ function detectRepoName(): { name: string; source: "git" | "cwd" } | null {
     return { name: fromCwd, source: "cwd" };
   }
   return null;
-}
-
-async function cmdInduct(args: ReturnType<typeof parseArgs>): Promise<number> {
-  // Repo scope. --repo can be passed multiple times. If absent, try to
-  // autodetect from git remote, then fall back to the cwd basename,
-  // then prompt as a last resort.
-  const repoFlags = getStringArray(args.flags, "repo");
-  let repos: string[];
-  if (repoFlags.length > 0) {
-    repos = repoFlags;
-  } else {
-    const detected = detectRepoName();
-    if (detected) {
-      const sourceLabel =
-        detected.source === "git" ? "git remote" : "current directory";
-      const confirm = (
-        await prompt(
-          `Tag drafts with repo '${detected.name}' (from ${sourceLabel})? [Y/n/type a different name] `,
-        )
-      ).trim();
-      const lower = confirm.toLowerCase();
-      if (lower === "n" || lower === "no") {
-        repos = [];
-      } else if (confirm === "" || lower === "y" || lower === "yes") {
-        repos = [detected.name];
-      } else {
-        // Anything else is treated as an override name.
-        repos = [confirm];
-      }
-    } else {
-      const typed = (
-        await prompt(
-          "Repo name to tag these drafts with (blank to skip): ",
-        )
-      ).trim();
-      repos = typed ? [typed] : [];
-    }
-  }
-
-  const short = getBool(args.flags, "short");
-  const questions = short ? shortInductionQuestions() : INDUCTION_QUESTIONS;
-
-  process.stdout.write(
-    `\nlore induct — ${questions.length} questions${short ? " (--short)" : ""}. ` +
-      `Answers become DRAFTS (review with \`loreguard review\` afterwards).\n` +
-      `Press blank-line to skip a question, type 'q' on the answer line to quit early.\n` +
-      (repos.length > 0 ? `Repos: ${repos.join(", ")}\n` : "") +
-      `\n`,
-  );
-
-  const answers: InductionAnswer[] = [];
-  let quitEarly = false;
-  for (let i = 0; i < questions.length; i++) {
-    const q = questions[i]!;
-    process.stdout.write(
-      `── ${i + 1} of ${questions.length} ── ${q.topic} ──\n${q.prompt}\n`,
-    );
-    const ans = await promptMulti("Answer:");
-    const trimmed = ans.trim();
-    if (trimmed.toLowerCase() === "q") {
-      quitEarly = true;
-      break;
-    }
-    if (trimmed.length === 0) {
-      process.stdout.write("(skipped)\n\n");
-      continue;
-    }
-    const source = (
-      await prompt("Source URL (PR/ADR/incident, blank to skip): ")
-    ).trim();
-    answers.push({
-      questionKey: q.key,
-      answer: trimmed,
-      source: source || undefined,
-    });
-    process.stdout.write("\n");
-  }
-
-  const db = openDb();
-  try {
-    const { created } = runInduct(db, { answers, repos });
-    process.stdout.write(
-      `\nlore induct: created ${created.length} draft(s)` +
-        (quitEarly ? " (quit early — drafts already saved are preserved)" : "") +
-        `.\n`,
-    );
-    for (const c of created) {
-      process.stdout.write(`  ${c.id}  ${c.title}\n`);
-    }
-    if (created.length > 0) {
-      process.stdout.write(
-        `\nReview them with: loreguard review\n`,
-      );
-    }
-    return 0;
-  } finally {
-    db.close();
-  }
 }
 
 async function cmdSetup(args: ReturnType<typeof parseArgs>): Promise<number> {
@@ -1422,87 +1294,52 @@ async function cmdSetup(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
   }
 
-  // [4/4] cold-start corpus nudge — detect ingestible sources in cwd
-  // and recommend the right next step. The MAIN failure mode of day-1
-  // is: setup succeeds, first Claude session calls search_lore, gets
-  // zero hits, user concludes the tool's broken. The nudge points
-  // them at the skill (Claude's reasoning produces better drafts)
-  // with the CLI as the bulk-mechanical fallback. We don't *run*
-  // ingest here — it requires Claude Code to be active.
+  // [4/4] cold-start nudge — the MAIN failure mode of day-1 is: setup
+  // succeeds, the first Claude session calls search_lore, gets zero
+  // hits, and the user concludes the tool's broken. The fix is to send
+  // them straight to /loreguard-onboard, which reads the repo with
+  // agent judgement and proposes well-shaped drafts (far better than the
+  // old mechanical induct/ingest paths, now removed). We detect likely
+  // source docs only to make the nudge concrete — we don't ingest here.
   const skipCorpusNudge = getBool(args.flags, "skip-corpus-nudge");
   if (skipCorpusNudge) {
-    process.stdout.write("[4/4] cold-start corpus nudge: skipped (--skip-corpus-nudge)\n");
+    process.stdout.write("[4/4] cold-start nudge: skipped (--skip-corpus-nudge)\n");
   } else {
     const sources = detectIngestSources();
-    const hasAny =
-      !!sources.claudeMd ||
-      sources.adrDirs.length > 0 ||
-      sources.otherDocs.length > 0;
-    process.stdout.write("[4/4] Cold-start corpus:\n");
-    if (dryRun) {
-      if (sources.claudeMd) {
-        process.stdout.write(`  would suggest ingesting ${sources.claudeMd}\n`);
-      }
-      for (const d of sources.adrDirs) {
-        process.stdout.write(`  would suggest ingesting ${d}/*.md\n`);
-      }
-      if (!hasAny) {
-        process.stdout.write("  no sources detected\n");
-      }
-    } else if (hasAny) {
-      if (sources.claudeMd) {
-        process.stdout.write(`  Found ${sources.claudeMd}\n`);
-      }
-      if (sources.adrDirs.length > 0) {
-        process.stdout.write(
-          `  Found ${sources.adrDirs.length} ADR director${sources.adrDirs.length === 1 ? "y" : "ies"}: ${sources.adrDirs.join(", ")}\n`,
-        );
-      }
-      if (sources.otherDocs.length > 0) {
-        process.stdout.write(
-          `  Found ${sources.otherDocs.length} other top-level doc(s): ${sources.otherDocs.map((p) => p.split("/").pop()).join(", ")}\n`,
-        );
-      }
-      const skillInstalled = !skipSkill;
-      process.stdout.write("\n");
-      if (skillInstalled) {
-        process.stdout.write(
-          "  Recommended (uses Claude's reasoning to triage what's worth capturing):\n" +
-            "    Open Claude Code in this repo, run /loreguard-onboard\n" +
-            "    The skill reads these files and creates well-shaped drafts\n" +
-            "    with source citations. Trust gate is unchanged — drafts\n" +
-            "    land in `loreguard review`.\n\n" +
-            "  Mechanical alternative (CLI, dump-then-prune):\n",
-        );
-      } else {
-        process.stdout.write(
-          "  The /loreguard-onboard skill wasn't installed (--skip-skill).\n" +
-            "  Cold-start options:\n" +
-            "    loreguard induct      # 10-question interview, no Claude needed\n",
-        );
-      }
-      if (sources.claudeMd) {
-        process.stdout.write(
-          `    loreguard ingest-md ${sources.claudeMd} --section "..."\n`,
-        );
-      }
-      for (const d of sources.adrDirs) {
-        process.stdout.write(
-          `    loreguard ingest-md ${d}/*.md --tag decisions\n`,
-        );
-      }
+    const found: string[] = [];
+    if (sources.claudeMd) found.push(sources.claudeMd);
+    if (sources.adrDirs.length > 0) {
+      found.push(
+        `${sources.adrDirs.length} ADR director${sources.adrDirs.length === 1 ? "y" : "ies"} (${sources.adrDirs.join(", ")})`,
+      );
+    }
+    if (sources.otherDocs.length > 0) {
+      found.push(
+        `${sources.otherDocs.length} other top-level doc(s)`,
+      );
+    }
+    process.stdout.write("[4/4] Cold-start:\n");
+    if (found.length > 0) {
+      process.stdout.write(`  Detected likely knowledge sources: ${found.join("; ")}\n`);
+    }
+    if (skipSkill) {
+      process.stdout.write(
+        "  The /loreguard-onboard skill wasn't installed (--skip-skill).\n" +
+          "  Install it, then in Claude Code run /loreguard-onboard to\n" +
+          "  populate your first records.\n",
+      );
     } else {
       process.stdout.write(
-        "  No CLAUDE.md / ADRs / docs detected.\n" +
-          "  Bootstrap manually:\n" +
-          "    loreguard induct      # 10-question interview\n" +
-          "    /loreguard-onboard    # in Claude Code: repo-aware interview\n",
+        "  Next: open Claude Code in this repo and run /loreguard-onboard.\n" +
+          "  The skill reads the repo (README, ADRs, recent commits) and\n" +
+          "  proposes well-shaped DRAFT records with source citations.\n" +
+          "  Trust gate is unchanged — drafts land in `loreguard review`.\n",
       );
     }
   }
 
   process.stdout.write(
-    "\nDone. After your first ingest, run `loreguard list` to see your drafts.\n",
+    "\nDone. After /loreguard-onboard, run `loreguard list` to see your drafts.\n",
   );
   return 0;
 }
@@ -2216,171 +2053,6 @@ async function readAllStdin(): Promise<string> {
   return buf;
 }
 
-async function cmdIngestMd(
-  args: ReturnType<typeof parseArgs>,
-): Promise<number> {
-  const { globSync } = await import("node:fs");
-  const { basename } = await import("node:path");
-  const {
-    deriveItemSource,
-    intentFilenameDenied,
-    parseMarkdownItems,
-    scoreCandidate,
-  } = await import("./ingest.js");
-  if (args.positionals.length === 0) {
-    process.stderr.write(
-      "loreguard: ingest-md requires at least one file/glob argument\n",
-    );
-    return 2;
-  }
-  const section = getString(args.flags, "section");
-  const extraTags = getStringArray(args.flags, "tag");
-  const repoFlags = getStringArray(args.flags, "repo");
-  const baseSource = getString(args.flags, "source");
-  const dryRun = getBool(args.flags, "dry-run");
-  const includeIntentFiles = getBool(args.flags, "include-intent-files");
-  // Auto-detect repo if user didn't supply one, matching the induct
-  // ladder so a bare `loreguard ingest-md ./CLAUDE.md` Just Works.
-  const repos =
-    repoFlags.length > 0
-      ? repoFlags
-      : (() => {
-          const det = detectRepoName();
-          return det ? [det.name] : [];
-        })();
-  // Expand the globs.
-  const files = new Set<string>();
-  for (const pattern of args.positionals) {
-    try {
-      for (const f of globSync(pattern)) {
-        if (typeof f === "string" && f.endsWith(".md")) files.add(f);
-      }
-    } catch {
-      // Treat the literal as a file path if globSync rejects it.
-      if (pattern.endsWith(".md") && existsSync(pattern)) files.add(pattern);
-    }
-  }
-  if (files.size === 0) {
-    process.stderr.write(
-      `loreguard: ingest-md matched 0 markdown files for ${args.positionals.join(" ")}\n`,
-    );
-    return 1;
-  }
-
-  // Diagnostic counters surfaced in --dry-run; tracked always so the
-  // final non-dry-run summary can report what was filtered out too.
-  let scannedFiles = 0;
-  let skippedIntentFiles = 0;
-  let chunksEvaluated = 0;
-  let drafted = 0;
-  const rejectionCounts: Record<string, number> = {};
-  function bumpRejection(reason: string): void {
-    rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1;
-  }
-
-  const db = openDb();
-  try {
-    for (const file of files) {
-      scannedFiles++;
-      const fileBase = basename(file).replace(/\.md$/, "");
-      const intentMatch = intentFilenameDenied(fileBase);
-      if (intentMatch && !includeIntentFiles) {
-        skippedIntentFiles++;
-        if (dryRun) {
-          process.stdout.write(
-            `  ${file}: SKIPPED (filename matches deny-list: "${intentMatch}"; pass --include-intent-files to override)\n`,
-          );
-        }
-        continue;
-      }
-      const text = readFileSync(file, "utf8");
-      const items = parseMarkdownItems(text, { section });
-      const baseTags = [
-        "imported",
-        `imported-from:${fileBase}`,
-        ...extraTags,
-      ];
-      let perFileCandidates = 0;
-      let perFileRejected = 0;
-      for (const item of items) {
-        chunksEvaluated++;
-        const scoring = scoreCandidate(item);
-        if (!scoring.pass) {
-          perFileRejected++;
-          for (const r of scoring.reasons) bumpRejection(r);
-          if (dryRun) {
-            process.stdout.write(
-              `    REJECT ${file}:L${item.sourceLine}  "${item.title.slice(0, 60)}"  [${scoring.reasons.join("; ")}]\n`,
-            );
-          }
-          continue;
-        }
-        perFileCandidates++;
-        const source = deriveItemSource(baseSource, item.sourceLine);
-        if (dryRun) {
-          process.stdout.write(
-            `    DRAFT  ${file}:L${item.sourceLine}  "${item.title.slice(0, 60)}"  [score=${scoring.score}; ${scoring.reasons.join("; ") || "no markers"}]\n`,
-          );
-        } else {
-          // suggestLore enforces status='draft' regardless of caller —
-          // bulk ingest never produces active lore. The reviewer is the
-          // gate, as always.
-          suggestLore(db, {
-            title: item.title,
-            summary: item.summary,
-            body: item.body,
-            tags: baseTags,
-            repos: repos.length > 0 ? repos : undefined,
-            source,
-            // Confidence is clamped to medium on drafts regardless,
-            // but pass low when no source so the surface signals it.
-            confidence: source ? "medium" : "low",
-            author: "ingest-md",
-          });
-        }
-        drafted++;
-      }
-      if (dryRun) {
-        process.stdout.write(
-          `  ${file}: ${items.length} chunk(s) → ${perFileCandidates} candidate(s), ${perFileRejected} rejected\n`,
-        );
-      }
-    }
-    // Summary — same shape for dry-run and real run.
-    const verb = dryRun ? "would draft" : "drafted";
-    process.stdout.write(
-      `\nloreguard ingest-md: ${verb} ${drafted} record(s) from ${scannedFiles - skippedIntentFiles}/${scannedFiles} file(s)\n`,
-    );
-    if (skippedIntentFiles > 0) {
-      process.stdout.write(
-        `  ${skippedIntentFiles} file(s) skipped (filename deny-list — plan/roadmap/progress/etc.; --include-intent-files overrides)\n`,
-      );
-    }
-    if (chunksEvaluated > 0) {
-      const rejected = chunksEvaluated - drafted;
-      process.stdout.write(
-        `  ${chunksEvaluated} chunk(s) evaluated; ${rejected} rejected:\n`,
-      );
-      const sorted = Object.entries(rejectionCounts).sort(
-        (a, b) => b[1] - a[1],
-      );
-      for (const [reason, n] of sorted) {
-        process.stdout.write(`    ${n.toString().padStart(4)}× ${reason}\n`);
-      }
-    }
-    if (dryRun) {
-      process.stdout.write(`  (dry-run — nothing written)\n`);
-    } else if (drafted > 0) {
-      process.stdout.write(
-        `  Review the drafts with \`loreguard review\` (or scope: \`loreguard review --tag imported\`).\n`,
-      );
-    }
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-
 export async function main(argv: ReadonlyArray<string>): Promise<number> {
   const [, , ...rest] = argv;
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
@@ -2441,8 +2113,6 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdSetup(parsed);
       case "demo":
         return await cmdDemo(parsed);
-      case "induct":
-        return await cmdInduct(parsed);
       case "absent":
         return await cmdAbsent(parsed);
       case "stats":
@@ -2453,8 +2123,6 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdImpact(parsed);
       case "boundary":
         return await cmdBoundary(parsed);
-      case "ingest-md":
-        return await cmdIngestMd(parsed);
       case "hooks":
         return await cmdHooks(parsed);
       case "doctor":

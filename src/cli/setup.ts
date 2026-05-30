@@ -255,11 +255,10 @@ export function addMcpServer(): McpAddResult {
 // ── Cold-start source detection ───────────────────────────────────────
 
 /**
- * Result of `detectIngestSources` — paths in the working directory that
- * would be good candidates for the first ingest. Used by the [4/4] step
- * of `loreguard setup` to nudge the user at the right next action
- * (`/loreguard-onboard` for thinking-driven ingest, or `loreguard
- * ingest-md` for mechanical bulk).
+ * Result of `detectIngestSources` — knowledge-doc paths in the working
+ * directory worth pointing the agent at. Used by the [4/4] step of
+ * `loreguard setup` to make the `/loreguard-onboard` cold-start nudge
+ * concrete ("I found CLAUDE.md and 2 ADR dirs — run /loreguard-onboard").
  */
 export interface IngestSources {
   /** Path to the first agent-instruction file found (CLAUDE.md /
@@ -343,4 +342,38 @@ export function detectIngestSources(cwd?: string): IngestSources {
     // best-effort
   }
   return { claudeMd, adrDirs, otherDocs };
+}
+
+/**
+ * Best-effort short repo name from a git remote URL. Used by the CLI's
+ * repo autodetection (e.g. `loreguard suggest --from-commit` tagging).
+ *
+ *   git@github.com:owner/loreguard-mcp.git  → loreguard-mcp
+ *   https://github.com/owner/loreguard-mcp  → loreguard-mcp
+ *   https://gitlab.com/g/sub/proj.git  → proj
+ *
+ * Returns null when the input doesn't look like a remote we can parse;
+ * the CLI then falls back to the cwd basename or asking the user.
+ */
+export function shortRepoNameFromRemote(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  // Strip trailing .git
+  const noGit = trimmed.replace(/\.git\/?$/, "");
+  // SSH form: git@host:owner/name
+  const sshMatch = /:([^/]+\/)*([^/]+)$/.exec(noGit);
+  if (noGit.startsWith("git@") && sshMatch) {
+    return sshMatch[2] ?? null;
+  }
+  // HTTPS form: https://host/owner/name
+  try {
+    const u = new URL(noGit);
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length === 0) return null;
+    return parts[parts.length - 1] ?? null;
+  } catch {
+    // Last resort — take the final path segment
+    const parts = noGit.split("/").filter(Boolean);
+    return parts.length > 0 ? (parts[parts.length - 1] ?? null) : null;
+  }
 }

@@ -134,10 +134,9 @@ useful local memory the next time they touch it:
 ```bash
 cd ~/code/payments-svc
 
-# 1. Cold-start: pick one based on what you have.
-loreguard induct                       # 10-Q interview from scratch
-# - or - if you already have docs:
-loreguard ingest-md ./CLAUDE.md ./docs/adrs/*.md   # one DRAFT per H3 / bullet
+# 1. Cold-start: let the agent read the repo and propose drafts.
+#    In Claude Code (with the loreguard MCP server configured):
+/loreguard-onboard
 
 # 2. Triage the drafts.
 loreguard review                       # [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit
@@ -153,163 +152,67 @@ git add .loreguard && git commit -m "seed loreguard"
 loreguard hooks install                # opt-in Claude Stop-hook
 ```
 
-Step 1 is the cold-start — interview from scratch (`induct`) or
-bulk-import what you already have (`ingest-md`). They're not mutually
-exclusive; many teams do both. Step 2 promotes the keepers. Step 3
-wires the agent so it queries lore on the next prompt — without
-this, the MCP server is installed but unused. Step 4 is optional and
-only matters if you want teammates to pick up the same records via
-`loreguard sync import .loreguard`. Step 5 is opt-in: installs a
-Claude Stop-hook that nudges you to review pending drafts at session
-end so they don't pile up forgotten.
+Step 1 is the cold-start — the `/loreguard-onboard` skill reads the repo
+and proposes drafts (detail below). Step 2 promotes the keepers. Step 3
+wires the agent so it queries lore on the next prompt — without this,
+the MCP server is installed but unused. Step 4 is optional and only
+matters if you want teammates to pick up the same records via
+`loreguard sync import .loreguard`. Step 5 is opt-in: installs a Claude
+Stop-hook that nudges you to review pending drafts at session end so
+they don't pile up forgotten.
 
 The rest of this section is the detail on each step.
 
-### Step 1 — `loreguard induct` (cold-start interview)
+### Step 1 — `/loreguard-onboard` (cold-start)
 
-`induct` asks 10 high-signal questions about the things agents tend to
-get wrong on a codebase they've never seen:
+The bundled **`/loreguard-onboard` Claude skill** is the way to seed a
+repo. It reads the repo first (README, ADRs, recent commits, deprecation
+markers, in-flight migrations) and surfaces *repo-specific* candidate
+drafts grounded in real source citations, then asks targeted follow-ups
+— rather than inventing memory or chunking every bullet in your docs.
 
-- dangerous areas to edit without context;
-- old patterns that shouldn't be copied;
-- architectural decisions that aren't visible from code;
-- migrations / transitions in flight;
-- invariants that must always hold;
-- which tests are authoritative;
-- external systems with surprising behaviour;
-- non-obvious conventions (naming, timezones, auth, permissions);
-- failure modes from past incidents;
-- what a new contributor should ask first.
+Why a skill and not a CLI scan: producing *good* lore needs judgement
+about what's durable and non-obvious. An agent reading the actual code
+does that well; a mechanical importer produces mostly noise (status
+trackers, TOC bullets, roadmap items) that floods the review queue and
+degrades the trust gate into "approve all." So the one cold-start path
+is the one that uses judgement.
 
-Flag variants:
-
-```bash
-loreguard induct                  # autodetects repo name from git remote
-loreguard induct --short          # 5 highest-signal questions instead of 10
-loreguard induct --repo my-svc    # override the auto-detected name (repeatable)
-```
-
-`--short` covers dangerous areas, in-flight migrations, invariants,
-non-obvious conventions, and past incidents — the bits agents most
-often get wrong first. Use it when inducting your tenth repo; use the
-full set the first time.
-
-Every non-blank answer becomes a **DRAFT** record tagged `induction`
-with a 90-day `reviewAfter`. Sourced answers go in as `confidence:
-medium`; unsourced as `low`. Skip a question with a blank line; quit
-early by typing `q` (drafts already saved are preserved).
-
-This is the opposite of "scan repo and invent memory" — it's a
-human-driven cold-start. Aim answers at non-obvious, high-consequence
-knowledge (see [What deserves lore?](#what-deserves-lore) below);
-"we use TypeScript" goes in `CLAUDE.md`, not here.
-
-#### Agent-driven alternative — `/loreguard-onboard` skill
-
-`loreguard induct` works without an agent in the loop — it asks the
-same 10 generic questions every time. When you *do* have an agent
-available, the bundled **`/loreguard-onboard` Claude skill** does
-something better: it reads the repo first (README, ADRs, recent
-commits, deprecation markers, in-flight migrations) and surfaces
-*repo-specific* candidate drafts grounded in real source citations,
-then asks targeted follow-ups instead of the generic 10.
-
-Same trust model — every record still lands as a draft and goes
-through `loreguard review`. Install:
+Install the skill (or run `loreguard setup`, which copies it for you):
 
 ```bash
 mkdir -p ~/.claude/skills
 cp -r skills/loreguard-onboard ~/.claude/skills/
 ```
 
-Then in Claude Code:
+Then, in Claude Code from inside the repo:
 
 ```text
 /loreguard-onboard
 ```
 
-The skill needs the `loreguard-mcp` server already configured (so
-`search_lore` / `get_lore` / `suggest_lore` are callable). See
-`skills/loreguard-onboard/SKILL.md` for the full procedure.
+Same trust model as everything else — every record the skill produces
+lands as a **draft** and goes through `loreguard review`. The skill
+needs the `loreguard-mcp` server already configured (so `search_lore` /
+`get_lore` / `suggest_lore` are callable). See
+[`skills/loreguard-onboard/SKILL.md`](skills/loreguard-onboard/SKILL.md)
+for the full procedure.
 
-Use the CLI for offline / scripted cold-starts; use the skill when you
-want the agent to do the repo-reading work for you.
+Aim records at non-obvious, high-consequence knowledge (see
+[What deserves lore?](#what-deserves-lore) below); "we use TypeScript"
+goes in `CLAUDE.md`, not here.
 
-#### Bulk-import alternative — `loreguard ingest-md`
-
-> **Caveat: only for clean knowledge docs.** Real-world dogfood
-> showed that pointing this at a typical `docs/` directory produces
-> 80%+ noise — status trackers, roadmaps, UI specs, and TOC bullets
-> all become DRAFT records, the review queue balloons past what any
-> human will read, and the trust gate degrades into "approve all."
-> The defaults below are tuned to reject that noise hard. If you
-> have a *messy* repo (plans / progress trackers mixed with real
-> conventions), use the **`/loreguard-onboard` skill** instead — it
-> reads files with agent judgement rather than chunking everything.
-
-If you **already have** clean knowledge written down (ADRs,
-SECURITY.md as a real policy doc, MIGRATION notes, INTEGRATION
-guides) and want to avoid the induct interview's per-question pace,
-`loreguard ingest-md` walks a glob, applies two filters, and creates
-DRAFT records for what survives. Same `loreguard review` queue gates
-everything before promotion.
-
-```bash
-# Always start with --dry-run to see what survives the filters.
-loreguard ingest-md ./docs/*.md --dry-run
-
-# Then run for real once you trust the output.
-loreguard ingest-md ./CLAUDE.md --section "Things That Catch People Out"
-loreguard ingest-md ./docs/adrs/*.md --tag decisions
-loreguard ingest-md ./docs/*.md --source https://github.com/org/repo
-```
-
-**Filter 1: filename deny-list (hard skip).** Files whose name
-contains any of `plan`, `roadmap`, `progress`, `todo`, `backlog`,
-`spec`, `usability`, `status`, `execution` are skipped entirely.
-These shapes are intent / status documents, not durable team
-knowledge — they decay fast and pollute FTS with terms agents
-shouldn't retrieve. Override with `--include-intent-files` when you
-genuinely mean to ingest them.
-
-**Filter 2: content-shape scoring (per chunk).** Each candidate gets
-scored:
-
-- **+1** per imperative marker (`must`, `should`, `always`, `never`, `do not`, `prefer`, `avoid`, `required`)
-- **+1** per durable-fact marker (`is not` / `are not` / `does not`, `requires` / `require`, `rejects`, `uses`, `stores`, `depends on`, `cannot`, `scoped to`, `contains`, etc.)
-- **−1** if body is < 200 chars (short factual lore can still pass on positive markers)
-- **−1** per future-tense / planning marker (`will`, `plan to`, `planned:`, `target:`, `todo`, `wip`)
-
-Hard-rejected regardless of score:
-
-- `title === summary === body` (collapsed single-line bullet)
-- title contains a date stamp like `(2026-03-24)` (status heading)
-
-Candidates pass at `score >= 1` — a record with no positive markers
-fails regardless of body length. The conservative shape means concise
-descriptive lore like *"Customer IDs are tenant-scoped"* passes (fact
-marker), while a UI spec bullet like *"Cards: Suppliers Connected:
-3/4"* fails (short + no markers).
-
-**Other flags:**
-
-- `--section "Heading Text"` — scope to one heading (case-insensitive substring match); content from that heading until the next same-or-higher-level heading
-- `--tag <name>` — extra tag on every drafted record (repeatable; always layered on top of `imported` and `imported-from:<file-basename>`)
-- `--repo <name>` — repo scope (repeatable; falls back to the auto-detected name if omitted)
-- `--source <url>` — base source URL; if it's a GitHub blob URL, the per-record source becomes `<base>#L<sourceLine>` so the reviewer can jump straight to the right line
-- `--dry-run` — print every accept/reject with reasons + summary counters; insert nothing
-
-The three cold-start paths aren't mutually exclusive — many teams do
-`ingest-md` on their ADR/policy files for the dense knowledge, then
-`induct` or `/loreguard-onboard` for the things that *aren't*
-written down yet.
+If the rationale already lives in a commit you made, you don't have to
+retype it — `loreguard suggest --from-commit <sha>` drafts a record
+straight from the commit message (see
+[Capture from a commit](#capture-from-a-commit--loreguard-suggest---from-commit)).
 
 ### Step 2 — `loreguard review` (triage drafts)
 
 Drafts are hidden from default search until a human promotes them.
 `loreguard review` walks the queue one record at a time with
 [a]pprove / [r]eject / [e]dit / [s]kip / [q]uit keystrokes. The same
-queue catches both your induction drafts and any drafts agents
+queue catches both your onboarding drafts and any drafts agents
 suggest later via `suggest_lore` — single triage point, no separate
 "agent inbox" to babysit.
 

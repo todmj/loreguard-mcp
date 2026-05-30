@@ -32,6 +32,7 @@ import {
   END_MARKER,
   findBundledSkillPath,
   instructionsBlock,
+  shortRepoNameFromRemote,
 } from "../src/cli/setup.js";
 
 describe("setup — appendInstructionsToFile", () => {
@@ -248,5 +249,30 @@ describe("setup — detectIngestSources", () => {
     expect(r.otherDocs.map((p) => p.split("/").pop())).toEqual([
       "ARCHITECTURE.md",
     ]);
+  });
+});
+
+describe("shortRepoNameFromRemote", () => {
+  it("parses SSH form", () => {
+    expect(
+      shortRepoNameFromRemote("git@github.com:owner/loreguard-mcp.git"),
+    ).toBe("loreguard-mcp");
+  });
+  it("parses HTTPS form, with or without .git", () => {
+    expect(
+      shortRepoNameFromRemote("https://github.com/owner/loreguard-mcp.git"),
+    ).toBe("loreguard-mcp");
+    expect(
+      shortRepoNameFromRemote("https://github.com/owner/loreguard-mcp"),
+    ).toBe("loreguard-mcp");
+  });
+  it("parses GitLab-style nested groups", () => {
+    expect(
+      shortRepoNameFromRemote("https://gitlab.com/group/sub/proj.git"),
+    ).toBe("proj");
+  });
+  it("returns null on empty input", () => {
+    expect(shortRepoNameFromRemote("")).toBe(null);
+    expect(shortRepoNameFromRemote("   ")).toBe(null);
   });
 });
