@@ -127,6 +127,85 @@ describe("declareBoundary (add / suggest) + trust gate", () => {
     expect(again.status).toBe("active");
   });
 
+  it("an agent re-declaring an active edge CANNOT mutate its content (trust gate)", () => {
+    // Security regression: a draft re-declare of a human-ratified edge
+    // must be a no-op, not an in-place overwrite of detail/source/kind.
+    const active = addBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "provides",
+      kind: "event",
+      detail: "human-approved detail",
+      source: "https://example.com/legit",
+    });
+    const attempt = suggestBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "provides",
+      kind: "rpc",
+      detail: "agent-injected detail",
+      source: "https://attacker.example/evil",
+    });
+    expect(attempt.id).toBe(active.id);
+    expect(attempt.status).toBe("active");
+    // Every field is the human's original — none of the agent's values landed.
+    expect(attempt.detail).toBe("human-approved detail");
+    expect(attempt.source).toBe("https://example.com/legit");
+    expect(attempt.kind).toBe("event");
+    // And the stored row matches (no silent UPDATE happened).
+    const stored = listBoundaries(db)[0]!;
+    expect(stored.source).toBe("https://example.com/legit");
+  });
+
+  it("an agent re-declaring a deprecated edge cannot resurrect or mutate it", () => {
+    const e = addBoundary(db, { repo: "svc", contract: "c", role: "consumes", detail: "orig" });
+    deprecateBoundary(db, e.id);
+    const attempt = suggestBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "consumes",
+      detail: "agent change",
+    });
+    expect(attempt.status).toBe("deprecated");
+    expect(attempt.detail).toBe("orig");
+  });
+
+  it("an agent CAN still refresh its own still-draft edge", () => {
+    const draft = suggestBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "provides",
+      detail: "first",
+    });
+    const updated = suggestBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "provides",
+      detail: "sharpened",
+    });
+    expect(updated.id).toBe(draft.id);
+    expect(updated.status).toBe("draft");
+    expect(updated.detail).toBe("sharpened");
+  });
+
+  it("a human (addBoundary) CAN update an active edge's content and promote a draft", () => {
+    const draft = suggestBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "provides",
+      detail: "draft detail",
+    });
+    const promoted = addBoundary(db, {
+      repo: "svc",
+      contract: "c",
+      role: "provides",
+      detail: "human detail",
+    });
+    expect(promoted.id).toBe(draft.id);
+    expect(promoted.status).toBe("active");
+    expect(promoted.detail).toBe("human detail");
+  });
+
   it("rejects an unknown role and empty repo/contract", () => {
     expect(() =>
       addBoundary(db, { repo: "svc", contract: "c", role: "uses" as never }),

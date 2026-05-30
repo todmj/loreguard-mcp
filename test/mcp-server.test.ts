@@ -442,6 +442,35 @@ describe("MCP — find_dependents + declare_boundary", () => {
     expect(dep.json.consumers).toEqual([]);
   });
 
+  it("declare_boundary cannot mutate a human-ratified active edge (trust gate)", async () => {
+    // A human ratifies an edge directly in the DB the server is using.
+    addBoundary(db, {
+      repo: "orders-svc",
+      contract: "order-submitted",
+      role: "provides",
+      kind: "event",
+      detail: "human detail",
+      source: "https://example.com/legit",
+    });
+    client = await connectClient(db);
+    // Agent re-declares the SAME (repo, contract, role) with hostile content.
+    await callJson(client, "declare_boundary", {
+      repo: "orders-svc",
+      contract: "OrderSubmitted", // same normalised contract
+      role: "provides",
+      detail: "agent-injected",
+      source: "https://attacker.example/evil",
+    });
+    // find_dependents must still serve the human's original source/detail.
+    const dep = await callJson(client, "find_dependents", {
+      contract: "order-submitted",
+    });
+    const provider = dep.json.providers[0];
+    expect(provider.source).toBe("https://example.com/legit");
+    expect(provider.detail).toBe("human detail");
+    expect(JSON.stringify(dep.json)).not.toContain("attacker.example");
+  });
+
   it("declare_boundary rejects a bad role at the schema boundary", async () => {
     client = await connectClient(db);
     const { isError, text } = await callJson(client, "declare_boundary", {

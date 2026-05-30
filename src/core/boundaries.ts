@@ -104,9 +104,15 @@ export interface DeclareBoundaryInput {
  *   - `addBoundary`     → 'active'  (human, CLI)
  *   - `suggestBoundary` → 'draft'   (agent, MCP)
  *
- * On a re-declare of an EXISTING edge we keep the existing status unless
- * the new declaration is human+active (a human re-asserting promotes a
- * draft). An agent re-declaring an already-active edge never demotes it.
+ * Trust gate (this is the boundary equivalent of "agents can't promote
+ * their own lore"): the agent/draft path may only touch an edge that is
+ * STILL A DRAFT. Re-declaring an already-ratified (`active`) or retired
+ * (`deprecated`) edge from the agent path is a NO-OP — it returns the
+ * existing edge unchanged rather than silently rewriting its
+ * detail/source/kind, which would let a prompt-injected agent poison a
+ * human-approved edge that other agents then read via `find_dependents`.
+ * The human path (`status === 'active'`, via `addBoundary`/the CLI) may
+ * update any edge and promotes a draft to active.
  */
 function upsertBoundary(
   db: Database,
@@ -132,8 +138,16 @@ function upsertBoundary(
     .get(repo, contract, input.role) as BoundaryRow | undefined;
 
   if (existing) {
+    // Trust gate: the agent/draft path can only refresh a still-draft
+    // edge. If the existing edge has already been ratified or retired by
+    // a human, an agent re-declaration must NOT mutate it — return it
+    // untouched. Without this an agent could overwrite the source/detail
+    // of a human-approved edge while it stays active, bypassing review.
+    if (status === "draft" && existing.status !== "draft") {
+      return getBoundary(db, existing.id)!;
+    }
     // A human re-asserting an edge can promote a draft to active; an
-    // agent re-declaration never changes a more-trusted existing status.
+    // agent re-declaration of a draft keeps it a draft.
     const nextStatus =
       status === "active" && existing.status === "draft"
         ? "active"
